@@ -107,3 +107,45 @@ async def session_stop(session_id: str) -> dict:
 @app.get("/skills", dependencies=[Depends(require_key)])
 async def skills() -> list[dict]:
     return SkillLoader().list_skills()
+
+
+@app.get("/artifacts", dependencies=[Depends(require_key)])
+async def artifacts(out_dir: str, tail_lines: int = 50) -> dict:
+    """Read back the standard artifacts of a completed run.
+
+    Returns: {out_dir, summary, files_changed, transcript_tail}.
+    `transcript_tail` is the last `tail_lines` parsed JSONL records.
+    """
+    import json
+    from pathlib import Path
+
+    base = Path(out_dir).expanduser()
+    if not base.is_dir():
+        raise HTTPException(404, f"out_dir not found: {base}")
+
+    summary = ""
+    summary_p = base / "summary.md"
+    if summary_p.exists():
+        summary = summary_p.read_text()
+
+    files_changed: list[str] = []
+    fc_p = base / "files_changed.txt"
+    if fc_p.exists():
+        files_changed = [ln for ln in fc_p.read_text().splitlines() if ln.strip()]
+
+    transcript_tail: list[dict] = []
+    t_p = base / "transcript.jsonl"
+    if t_p.exists():
+        lines = [ln for ln in t_p.read_text().splitlines() if ln.strip()]
+        for ln in lines[-tail_lines:]:
+            try:
+                transcript_tail.append(json.loads(ln))
+            except json.JSONDecodeError:
+                continue
+
+    return {
+        "out_dir": str(base),
+        "summary": summary,
+        "files_changed": files_changed,
+        "transcript_tail": transcript_tail,
+    }

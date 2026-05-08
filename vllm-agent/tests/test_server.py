@@ -7,8 +7,18 @@ from vllm_agent.server import app as fastapi_app
 
 @pytest.fixture
 def client():
+    """Return a TestClient that always uses a freshly-reset server module.
+
+    The auth tests call `importlib.reload(srv)` while VLLM_AGENT_API_KEY is
+    set, which mutates the shared module dict.  Re-importing here (with the
+    key absent from the environment) restores the clean state before every
+    test that uses this fixture.
+    """
+    import importlib
+    import vllm_agent.server as srv
+    importlib.reload(srv)
     from fastapi.testclient import TestClient
-    return TestClient(fastapi_app)
+    return TestClient(srv.app)
 
 
 def test_health(client):
@@ -131,3 +141,41 @@ def test_health_open_even_when_key_set(monkeypatch):
     c = TestClient(srv.app)
     r = c.get("/health")
     assert r.status_code == 200
+
+
+def test_artifacts_returns_summary_files_changed_transcript_tail(client, tmp_path):
+    out = tmp_path / "out"
+    out.mkdir()
+    (out / "summary.md").write_text("did the thing\n")
+    (out / "files_changed.txt").write_text("a.py\nb.py\n")
+    (out / "transcript.jsonl").write_text(
+        '{"kind":"message","role":"system","content":"sys"}\n'
+        '{"kind":"message","role":"user","content":"go"}\n'
+        '{"kind":"tool_call","tool":"finish","args":{},"result":{"status":"finished"}}\n'
+    )
+    r = client.get(f"/artifacts?out_dir={out}")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["summary"] == "did the thing\n"
+    assert body["files_changed"] == ["a.py", "b.py"]
+    assert len(body["transcript_tail"]) == 3
+    assert body["transcript_tail"][-1]["kind"] == "tool_call"
+
+
+def test_artifacts_404_when_dir_missing(client, tmp_path):
+    r = client.get(f"/artifacts?out_dir={tmp_path}/nonexistent")
+    assert r.status_code == 404
+
+
+def test_artifacts_tail_lines_caps_transcript(client, tmp_path):
+    out = tmp_path / "out"
+    out.mkdir()
+    (out / "summary.md").write_text("ok")
+    (out / "files_changed.txt").write_text("")
+    (out / "transcript.jsonl").write_text(
+        "\n".join(f'{{"kind":"message","i":{i}}}' for i in range(50)) + "\n"
+    )
+    r = client.get(f"/artifacts?out_dir={out}&tail_lines=10")
+    assert r.status_code == 200
+    assert len(r.json()["transcript_tail"]) == 10
+    assert r.json()["transcript_tail"][0]["i"] == 40
