@@ -9,18 +9,28 @@ non-negotiable:
   2. Generated content is always written to disk and only metadata returns.
      Claude's context never accumulates raw model output.
 
-Tool surface (7 total):
+Tool surface (13 total):
 
   Utility:
     - health()              probe the vLLM endpoint
     - list_models()         list served models
     - verify_project(path)  smoke-test a Python project on disk
+    - list_skills()         list discoverable agent skills (project/user/superpowers)
 
-  Generation (all write to disk, all have web search):
-    - ask(prompt, out_path)            single-turn Q&A, writes the answer
-    - converse(messages, out_path)     multi-turn dialog, writes the final reply
-    - scaffold(prompt, out_dir)        multi-file project generation
+  Generation (delegate to vllm_agent.loop with web_search-only palette;
+   write to disk, return only metadata):
+    - ask(prompt, out_path)             single-turn Q&A, writes the answer
+    - converse(messages, out_path)      multi-turn dialog, writes the final reply
+    - scaffold(prompt, out_dir)         multi-file project generation
     - critique(prompt, draft, out_path) draft → corrected version
+
+  Agent dispatch (delegate to vllm_agent.api; mode='local' runs in-process,
+   mode='remote' POSTs to VLLM_AGENT_URL inside the VM):
+    - agent_run(task, ...)              one-shot coding-agent task
+    - agent_session_start(goal, ...)    start a long-running session
+    - agent_session_step(session_id)    run one step
+    - agent_session_status(session_id)  read session state
+    - agent_session_stop(session_id)    stop a session
 
 Environment:
     VLLM_BASE_URL        default http://127.0.0.1:8000
