@@ -1,0 +1,17 @@
+{
+  "_setup_": "Run once: cd mcp-server && uv venv --python 3.12 .venv && uv pip install --python .venv/bin/python -e .",
+  "_note_": "All generation tools (ask, converse, scaffold, critique) write output to disk and have web search enabled. There is no opt-out — this is the design.",
+  "mcpServers": {
+    "vllm-rtx5090": {
+      "command": "/home/bdx/allcode/github/vantagecompute/rtx_5090_dev/mcp-server/.venv/bin/python",
+      "args": [
+        "/home/bdx/allcode/github/vantagecompute/rtx_5090_dev/mcp-server/vllm_mcp.py"
+      ],
+      "env": {
+        "VLLM_BASE_URL": "http://192.168.9.150:8000",
+        "VLLM_MODEL": "QuantTrio/Qwen3-Coder-30B-A3B-Instruct-AWQ",
+        "DDG_MIN_INTERVAL_S": "1.5"
+      }
+    }
+  }
+}

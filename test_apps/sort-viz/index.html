@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sorting Algorithm Visualizer</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Sorting Algorithm Visualizer</h1>
+            <p id="algorithm-description">Select an algorithm to begin</p>
+        </header>
+        
+        <div class="controls">
+            <div class="control-group">
+                <label for="algorithm-select">Algorithm:</label>
+                <select id="algorithm-select">
+                    <option value="bubble">Bubble Sort</option>
+                    <option value="insertion">Insertion Sort</option>
+                    <option value="selection">Selection Sort</option>
+                    <option value="merge">Merge Sort</option>
+                    <option value="quick">Quick Sort</option>
+                    <option value="heap">Heap Sort</option>
+                </select>
+            </div>
+            
+            <div class="control-group">
+                <label for="array-size">Array Size: <span id="size-value">100</span></label>
+                <input type="range" id="array-size" min="10" max="200" value="100">
+            </div>
+            
+            <div class="control-group">
+                <label for="speed-slider">Speed: <span id="speed-value">50</span>ms</label>
+                <input type="range" id="speed-slider" min="1" max="200" value="50">
+            </div>
+            
+            <div class="button-group">
+                <button id="generate-btn">Generate New Array</button>
+                <button id="sort-btn">Sort</button>
+            </div>
+        </div>
+        
+        <div class="stats">
+            <div class="stat-item">
+                <span class="stat-label">Comparisons:</span>
+                <span id="comparisons-count">0</span>
+            </div>
+            <div class="stat-item">
+                <span class="stat-label">Swaps/Writes:</span>
+                <span id="swaps-count">0</span>
+            </div>
+            <div class="stat-item">
+                <span class="stat-label">Time Elapsed:</span>
+                <span id="time-count">0</span>ms
+            </div>
+        </div>
+        
+        <div class="visualization-container">
+            <canvas id="bar-canvas"></canvas>
+        </div>
+    </div>
+    
+    <script src="app.js"></script>
+</body>
+</html>

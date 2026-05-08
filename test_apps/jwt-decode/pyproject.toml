@@ -1,0 +1,14 @@
+[project]
+name = "jwt-decode"
+version = "0.1.0"
+description = "A simple CLI tool to decode JWT tokens"
+authors = [{ name = "Author", email = "author@example.com" }]
+dependencies = []
+requires-python = ">=3.12"
+
+[project.scripts]
+jwt-decode = "jwt_decode:main"
+
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"

@@ -1,0 +1,45 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "freeipa-server"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = [
+    "ops>=2.16",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "ruff",
+    "ops[testing]",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py310"
+
+[tool.ruff.lint]
+select = [
+    "E",
+    "W",
+    "F",
+    "I",
+    "C",
+    "N",
+    "D",
+    "Y",
+    "B",
+    "A",
+    "UP",
+    "S",
+    "BLE",
+    "FBT",
+    "PT",
+    "RUF",
+]

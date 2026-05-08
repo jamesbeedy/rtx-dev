@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "multi-exec"
+version = "0.1.0"
+description = "Run multiple shell commands in parallel"
+authors = [{name = "Author Name"}]
+license = {text = "MIT"}
+readme = "README.md"
+requires-python = ">=3.12"
+
+[project.scripts]
+multi-exec = "multi_exec:main"

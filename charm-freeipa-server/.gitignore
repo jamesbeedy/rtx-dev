@@ -1,0 +1,10 @@
+__pycache__/
+*.charm
+.tox/
+.venv/
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+.coverage

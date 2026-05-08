@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kfp-gen"
+version = "0.1.0"
+description = "CLI tool to scaffold Kubeflow Pipelines v2 projects"
+requires-python = ">=3.12"
+dependencies = []
+
+[project.scripts]
+kfp-gen = "kfp_gen:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["kfp_gen*"]

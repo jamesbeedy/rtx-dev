@@ -1,0 +1,44 @@
+name: freeipa-client
+type: charm
+subordinate: true
+base: ubuntu@24.04
+platforms:
+  amd64: ~
+summary: FreeIPA client for enrolling hosts into a FreeIPA domain
+description: |
+  This subordinate charm enrolls a host into a FreeIPA domain.
+  It requires a relation to a FreeIPA server to function.
+parts:
+  charm:
+    plugin: charm
+config:
+  options:
+    enroll-as:
+      type: string
+      description: Principal to enroll as
+      default: admin
+    enrollment-password:
+      type: string
+      description: Password for enrollment principal
+      default: ""
+    client-fqdn:
+      type: string
+      description: FQDN of the client host
+      default: ""
+    automount:
+      type: boolean
+      description: Enable automount
+      default: false
+    mkhomedir:
+      type: boolean
+      description: Create home directories
+      default: true
+requires:
+  juju-info:
+    interface: juju-info
+    scope: container
+  freeipa:
+    interface: freeipa
+actions:
+  leave-domain:
+    description: Leave the FreeIPA domain
