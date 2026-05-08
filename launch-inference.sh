@@ -131,29 +131,16 @@ remote "ip link show $BRIDGE >/dev/null 2>&1" || die "Bridge $BRIDGE not found o
 remote "lxc storage show $STORAGE_POOL >/dev/null 2>&1" || die "LXD storage pool '$STORAGE_POOL' not found."
 
 # ---------- 4. Render profile from template ----------
-if [[ -n "$API_KEY" ]]; then
-  VLLM_API_KEY_ARG=" --api-key $API_KEY"
-else
-  VLLM_API_KEY_ARG=""
-fi
-
 RENDERED="$(mktemp)"
 trap 'rm -f "$RENDERED"' EXIT
 
 sed \
   -e "s|__PROFILE_NAME__|$PROFILE_NAME|g" \
-  -e "s|__VLLM_MODEL__|$MODEL|g" \
-  -e "s|__VLLM_MAX_LEN__|$MAX_LEN|g" \
-  -e "s|__VLLM_GPU_UTIL__|$GPU_UTIL|g" \
-  -e "s|__VLLM_QUANT__|$QUANTIZATION|g" \
-  -e "s|__VLLM_API_KEY_ARG__|$VLLM_API_KEY_ARG|g" \
   -e "s|__BRIDGE__|$BRIDGE|g" \
   -e "s|__STORAGE_POOL__|$STORAGE_POOL|g" \
   -e "s|__ROOT_SIZE__|$ROOT_SIZE|g" \
   -e "s|__LIMITS_CPU__|$CPUS|g" \
   -e "s|__LIMITS_MEMORY__|$MEMORY|g" \
-  -e "s|__DDG_MIN_INTERVAL__|$DDG_INTERVAL|g" \
-  -e "s|__VLLM_AGENT_API_KEY__|$AGENT_API_KEY|g" \
   "$TEMPLATE" >"$RENDERED"
 
 log "Rendered profile to $RENDERED ($(wc -l <"$RENDERED") lines)"
@@ -221,27 +208,7 @@ for i in $(seq 1 90); do
 done
 remote "lxc exec $VM_NAME -- true" || die "VM did not return after cloud-init reboot."
 
-# ---------- 13. Poll vLLM /v1/models until ready ----------
-log "Polling vLLM /v1/models (model first-load downloads ~18 GiB on initial run)..."
-for i in $(seq 1 90); do
-  if remote "lxc exec $VM_NAME -- curl -s --max-time 3 http://127.0.0.1:$PORT/v1/models" 2>/dev/null | grep -q '"object":"list"'; then
-    log "vLLM API ready after ${i}x10s"
-    break
-  fi
-  if (( i % 6 == 0 )); then
-    log "  ...still loading (~$((i*10))s elapsed). Recent log:"
-    remote "lxc exec $VM_NAME -- bash -c 'journalctl -u vllm -n 3 --no-pager 2>/dev/null | tail -3'" || true
-  fi
-  sleep 10
-done
-
-if ! remote "lxc exec $VM_NAME -- curl -s --max-time 3 http://127.0.0.1:$PORT/v1/models" 2>/dev/null | grep -q '"object":"list"'; then
-  warn "vLLM API not yet responding after 15 min. Tailing the last 40 lines of the journal:"
-  remote "lxc exec $VM_NAME -- journalctl -u vllm -n 40 --no-pager" || true
-  die "vLLM did not start in the expected window. Inspect with: ssh $LXD_HOST -- lxc exec $VM_NAME -- journalctl -u vllm -f"
-fi
-
-# ---------- 14. Push local repo into VM and install vllm-agent ----------
+# ---------- 13. Push local repo into VM ----------
 # (Avoids needing GitHub auth in the VM for private repos.)
 log "Packaging local repo and pushing into VM..."
 TARBALL="$(mktemp -t rtx_5090_dev.XXXXXX.tar.gz)"
@@ -251,34 +218,72 @@ tar --exclude='./.git' --exclude='./.worktrees' \
     --exclude='**/__pycache__' --exclude='**/*.egg-info' \
     -C "$SCRIPT_DIR" -czf "$TARBALL" .
 
-# scp the tarball to the LXD host, then lxc-file-push it into the VM.
 scp -q "$TARBALL" "$LXD_HOST:/tmp/rtx_5090_dev.tar.gz"
 rm -f "$TARBALL"
 remote "lxc file push /tmp/rtx_5090_dev.tar.gz $VM_NAME/tmp/rtx_5090_dev.tar.gz"
 remote "rm /tmp/rtx_5090_dev.tar.gz"
 
-log "Extracting and installing vllm-agent in VM..."
+log "Extracting repo into VM at /home/ubuntu/rtx_5090_dev..."
 remote "lxc exec $VM_NAME -- bash -c 'set -e; mkdir -p /home/ubuntu/rtx_5090_dev && tar -xzf /tmp/rtx_5090_dev.tar.gz -C /home/ubuntu/rtx_5090_dev && chown -R ubuntu:ubuntu /home/ubuntu/rtx_5090_dev && rm /tmp/rtx_5090_dev.tar.gz'"
-remote "lxc exec $VM_NAME -- su - ubuntu -c 'cd /home/ubuntu/rtx_5090_dev/vllm-agent && python3 -m venv .venv-agent && .venv-agent/bin/pip install --quiet --upgrade pip && .venv-agent/bin/pip install --quiet -e .'"
 
-log "Starting vllm-agent.service..."
-remote "lxc exec $VM_NAME -- bash -c 'systemctl reset-failed vllm-agent.service 2>/dev/null || true; systemctl restart vllm-agent.service'"
+# ---------- 14. Generate .env on the VM + bring compose stack up ----------
+log "Writing .env on the VM (mode 0600)..."
+remote "lxc exec $VM_NAME -- bash -c 'cat > /home/ubuntu/rtx_5090_dev/.env <<ENV_EOF
+VLLM_MODEL=$MODEL
+VLLM_QUANT_ARGS=$QUANTIZATION
+VLLM_MAX_LEN=$MAX_LEN
+VLLM_GPU_UTIL=$GPU_UTIL
+VLLM_API_KEY=$API_KEY
+VLLM_AGENT_API_KEY=$AGENT_API_KEY
+DDG_MIN_INTERVAL_S=$DDG_INTERVAL
+ENV_EOF
+chown ubuntu:ubuntu /home/ubuntu/rtx_5090_dev/.env
+chmod 600 /home/ubuntu/rtx_5090_dev/.env'"
 
-# ---------- 15. Poll vllm-agent /health until ready ----------
-log "Polling vllm-agent /health..."
+log "Pulling images (vllm/vllm-openai:latest, python:3.12-slim, nginx:alpine)..."
+remote "lxc exec $VM_NAME -- su - ubuntu -c 'cd ~/rtx_5090_dev && docker compose pull'"
+log "Starting compose stack (docker compose up -d)..."
+remote "lxc exec $VM_NAME -- su - ubuntu -c 'cd ~/rtx_5090_dev && docker compose up -d'"
+
+# ---------- 15. Poll vLLM /v1/models via nginx until ready ----------
+log "Polling vLLM /v1/models via nginx (model first-load downloads ~18 GiB on initial run)..."
+for i in $(seq 1 90); do
+  if remote "lxc exec $VM_NAME -- curl -s --max-time 3 http://127.0.0.1:8443/v1/models" 2>/dev/null | grep -q '"object":"list"'; then
+    log "vLLM API ready after ${i}x10s"
+    break
+  fi
+  if (( i % 6 == 0 )); then
+    log "  ...still loading (~$((i*10))s elapsed). Recent vllm logs:"
+    remote "lxc exec $VM_NAME -- su - ubuntu -c 'cd ~/rtx_5090_dev && docker compose logs --tail=3 vllm 2>/dev/null | tail -3'" || true
+  fi
+  sleep 10
+done
+
+if ! remote "lxc exec $VM_NAME -- curl -s --max-time 3 http://127.0.0.1:8443/v1/models" 2>/dev/null | grep -q '"object":"list"'; then
+  warn "vLLM API not yet responding after 15 min. Tailing recent vllm container logs:"
+  remote "lxc exec $VM_NAME -- su - ubuntu -c 'cd ~/rtx_5090_dev && docker compose logs --tail=40 vllm'" || true
+  die "vLLM did not start in the expected window. Inspect with: ssh $LXD_HOST -- lxc exec $VM_NAME -- su - ubuntu -c 'cd ~/rtx_5090_dev && docker compose logs -f vllm'"
+fi
+
+# ---------- 16. Poll vllm-agent via nginx /agent/skills until ready ----------
+# Build curl auth header if agent key is set (for the probe to bypass 401)
+PROBE_AUTH=""
+[[ -n "$AGENT_API_KEY" ]] && PROBE_AUTH="-H \"Authorization: Bearer $AGENT_API_KEY\""
+
+log "Polling vllm-agent (via nginx /agent/skills)..."
 for i in $(seq 1 60); do
-  if remote "lxc exec $VM_NAME -- curl -s --max-time 3 http://127.0.0.1:8088/health" 2>/dev/null | grep -q '"ok":true'; then
+  if remote "lxc exec $VM_NAME -- bash -c \"curl -s --max-time 3 $PROBE_AUTH http://127.0.0.1:8443/agent/skills\"" 2>/dev/null | grep -q '\['; then
     log "vllm-agent ready after ${i}x5s"
     break
   fi
   sleep 5
 done
 
-if ! remote "lxc exec $VM_NAME -- curl -s --max-time 3 http://127.0.0.1:8088/health" 2>/dev/null | grep -q '"ok":true'; then
-  warn "vllm-agent not yet responding after 5 min. Tailing the journal:"
-  remote "lxc exec $VM_NAME -- journalctl -u vllm-agent -n 30 --no-pager" || true
+if ! remote "lxc exec $VM_NAME -- bash -c \"curl -s --max-time 3 $PROBE_AUTH http://127.0.0.1:8443/agent/skills\"" 2>/dev/null | grep -q '\['; then
+  warn "vllm-agent not yet responding after 5 min. Tailing recent container logs:"
+  remote "lxc exec $VM_NAME -- su - ubuntu -c 'cd ~/rtx_5090_dev && docker compose logs --tail=40 vllm-agent'" || true
   warn "vllm-agent will be unavailable; agent_run(mode=remote) will return errors. Investigate with:"
-  warn "  ssh $LXD_HOST -- lxc exec $VM_NAME -- journalctl -u vllm-agent -f"
+  warn "  ssh $LXD_HOST -- lxc exec $VM_NAME -- su - ubuntu -c 'cd ~/rtx_5090_dev && docker compose logs -f vllm-agent'"
 fi
 
 # ---------- 15. Capture VM IP (now that networking is fully up) ----------
@@ -303,8 +308,8 @@ remote "lxc exec $VM_NAME -- curl -s $AUTH_HEADER http://127.0.0.1:$PORT/v1/chat
 # ---------- 17. Update local .mcp.json (so MCP server picks up new config) ----------
 MCP_JSON="$SCRIPT_DIR/.mcp.json"
 if [[ -f "$MCP_JSON" ]]; then
-  log "Updating $MCP_JSON with VLLM_BASE_URL=http://${VM_IP}:${PORT}, VLLM_MODEL=$MODEL, DDG_MIN_INTERVAL_S=$DDG_INTERVAL..."
-  python3 - "$MCP_JSON" "http://${VM_IP}:${PORT}" "$MODEL" "$DDG_INTERVAL" "$API_KEY" "http://${VM_IP}:8088" "$AGENT_API_KEY" <<'PYEOF'
+  log "Updating $MCP_JSON with VLLM_BASE_URL=http://${VM_IP}:8443, VLLM_MODEL=$MODEL, DDG_MIN_INTERVAL_S=$DDG_INTERVAL..."
+  python3 - "$MCP_JSON" "http://${VM_IP}:8443" "$MODEL" "$DDG_INTERVAL" "$API_KEY" "http://${VM_IP}:8443/agent" "$AGENT_API_KEY" <<'PYEOF'
 import json, sys
 path, base_url, model, ddg_interval, api_key, agent_url, agent_api_key = sys.argv[1:8]
 with open(path) as f:
@@ -336,7 +341,7 @@ else
 fi
 
 # ---------- 18. Done — show endpoint + MCP config ----------
-ENDPOINT="http://${VM_IP}:${PORT}"
+ENDPOINT="http://${VM_IP}:8443"
 AGENT_KEY_LINE=""
 if [[ -n "$AGENT_API_KEY" ]]; then
   AGENT_KEY_LINE=$',\n          "VLLM_AGENT_API_KEY": "'"$AGENT_API_KEY"'"'
@@ -346,14 +351,14 @@ cat <<EOF
 ============================================================
  vLLM ready
 ============================================================
-  Endpoint:        $ENDPOINT
-  Agent endpoint:  http://${VM_IP}:8088
+  Endpoint:        http://${VM_IP}:8443           (vLLM via nginx)
+  Agent endpoint:  http://${VM_IP}:8443/agent     (vllm-agent via nginx)
   Model:           $MODEL
   Max model len:   $MAX_LEN
   API key:         ${API_KEY:-(none)}
   VM:              $VM_NAME on $TARGET (GPU $GPU_PCI)
   Profile:         $PROFILE_NAME
-  Tail logs:       ssh $LXD_HOST -- lxc exec $VM_NAME -- journalctl -u vllm -f
+  Tail logs:       ssh $LXD_HOST -- lxc exec $VM_NAME -- su - ubuntu -c 'cd ~/rtx_5090_dev && docker compose logs -f vllm'
 
 To register as an MCP server in Claude Code, add to your MCP config
 (e.g. ~/.config/claude-code/mcp.json or wherever your client reads it):
@@ -366,7 +371,7 @@ To register as an MCP server in Claude Code, add to your MCP config
         "env": {
           "VLLM_BASE_URL": "$ENDPOINT",
           "VLLM_MODEL": "$MODEL",
-          "VLLM_AGENT_URL": "http://${VM_IP}:8088",
+          "VLLM_AGENT_URL": "http://${VM_IP}:8443/agent",
           "DDG_MIN_INTERVAL_S": "$DDG_INTERVAL"$( [[ -n "$API_KEY" ]] && printf ',\n          "VLLM_API_KEY": "%s"' "$API_KEY")${AGENT_KEY_LINE}
         }
       }
