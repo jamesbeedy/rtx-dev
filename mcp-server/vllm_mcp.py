@@ -75,6 +75,14 @@ DEFAULT_SYSTEM = os.environ.get(
 )
 _DDG_MIN_INTERVAL = float(os.environ.get("DDG_MIN_INTERVAL_S", "1.5"))
 VLLM_AGENT_URL = os.environ.get("VLLM_AGENT_URL", "")  # e.g. http://10.x.y.z:8088
+VLLM_AGENT_API_KEY = os.environ.get("VLLM_AGENT_API_KEY", "")
+
+
+def _agent_headers() -> dict[str, str]:
+    """Authorization header for VM-side vllm-agent calls. Empty if no key set."""
+    if VLLM_AGENT_API_KEY:
+        return {"Authorization": f"Bearer {VLLM_AGENT_API_KEY}"}
+    return {}
 
 # import-name → PyPI distribution-name aliases for verify_project
 _IMPORT_TO_DIST = {
@@ -182,7 +190,7 @@ async def _agent_run_remote(req: _AgentRunRequest) -> dict[str, Any]:
         "extra_context": req.extra_context,
     }
     async with httpx.AsyncClient(timeout=float(req.timeout_s + 30)) as client:
-        r = await client.post(f"{VLLM_AGENT_URL}/run", json=body)
+        r = await client.post(f"{VLLM_AGENT_URL}/run", json=body, headers=_agent_headers())
     if r.status_code != 200:
         return {"status": "error", "error": f"VM agent HTTP {r.status_code}: {r.text[:300]}"}
     return r.json()
@@ -192,7 +200,7 @@ async def _http_session_start(body: dict) -> dict[str, Any]:
     if not VLLM_AGENT_URL:
         return {"status": "error", "error": "VLLM_AGENT_URL not set"}
     async with httpx.AsyncClient(timeout=30.0) as client:
-        r = await client.post(f"{VLLM_AGENT_URL}/session", json=body)
+        r = await client.post(f"{VLLM_AGENT_URL}/session", json=body, headers=_agent_headers())
     return r.json() if r.status_code == 200 else {"status": "error",
                                                    "error": f"HTTP {r.status_code}: {r.text[:300]}"}
 
@@ -201,7 +209,7 @@ async def _http_session_step(session_id: str, body: dict) -> dict[str, Any]:
     if not VLLM_AGENT_URL:
         return {"status": "error", "error": "VLLM_AGENT_URL not set"}
     async with httpx.AsyncClient(timeout=1800.0) as client:
-        r = await client.post(f"{VLLM_AGENT_URL}/session/{session_id}/step", json=body)
+        r = await client.post(f"{VLLM_AGENT_URL}/session/{session_id}/step", json=body, headers=_agent_headers())
     return r.json() if r.status_code == 200 else {"status": "error",
                                                    "error": f"HTTP {r.status_code}: {r.text[:300]}"}
 
@@ -210,7 +218,7 @@ async def _http_session_status(session_id: str) -> dict[str, Any]:
     if not VLLM_AGENT_URL:
         return {"status": "error", "error": "VLLM_AGENT_URL not set"}
     async with httpx.AsyncClient(timeout=10.0) as client:
-        r = await client.get(f"{VLLM_AGENT_URL}/session/{session_id}")
+        r = await client.get(f"{VLLM_AGENT_URL}/session/{session_id}", headers=_agent_headers())
     return r.json() if r.status_code == 200 else {"status": "error",
                                                    "error": f"HTTP {r.status_code}: {r.text[:300]}"}
 
@@ -219,7 +227,7 @@ async def _http_session_stop(session_id: str) -> dict[str, Any]:
     if not VLLM_AGENT_URL:
         return {"status": "error", "error": "VLLM_AGENT_URL not set"}
     async with httpx.AsyncClient(timeout=10.0) as client:
-        r = await client.post(f"{VLLM_AGENT_URL}/session/{session_id}/stop")
+        r = await client.post(f"{VLLM_AGENT_URL}/session/{session_id}/stop", headers=_agent_headers())
     return r.json() if r.status_code == 200 else {"status": "error",
                                                    "error": f"HTTP {r.status_code}: {r.text[:300]}"}
 
