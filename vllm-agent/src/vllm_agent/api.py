@@ -114,8 +114,25 @@ async def agent_run(req: AgentRunRequest) -> AgentRunResult:
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_prompt},
     ]
+    import asyncio
     t0 = time.perf_counter()
-    loop_result = await run_loop(msgs, ctx, cfg)
+    try:
+        loop_result = await asyncio.wait_for(run_loop(msgs, ctx, cfg),
+                                             timeout=float(req.timeout_s))
+    except asyncio.TimeoutError:
+        duration = time.perf_counter() - t0
+        files_changed = _files_changed(before, ws.root)
+        (out_dir / "files_changed.txt").write_text(
+            "\n".join(files_changed) + ("\n" if files_changed else ""))
+        summary_path = out_dir / "summary.md"
+        if not summary_path.exists():
+            summary_path.write_text("(timed out before finish)")
+        return AgentRunResult(
+            run_id=run_id, out_dir=str(out_dir), summary_path=str(summary_path),
+            files_changed=files_changed, diff_path=None,
+            iterations=0, duration_s=round(duration, 2),
+            status="timeout", error=f"agent_run exceeded timeout_s={req.timeout_s}",
+        )
     duration = time.perf_counter() - t0
 
     files_changed = _files_changed(before, ws.root)

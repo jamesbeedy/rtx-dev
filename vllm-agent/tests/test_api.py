@@ -92,3 +92,29 @@ async def test_agent_session_start_step_status_stop(tmp_path, monkeypatch):
 
     stopped = await agent_session_stop(s.session_id)
     assert stopped.status == "stopped"
+
+
+@respx.mock
+async def test_agent_run_emits_timeout_status(tmp_path, monkeypatch):
+    """If the run exceeds timeout_s, status is 'timeout'."""
+    import asyncio as _asyncio
+
+    async def _slow(_request):
+        await _asyncio.sleep(2.0)
+        return Response(200, json={"choices": [{"message": {"content": "late"}}]})
+
+    respx.post("https://vllm.example/v1/chat/completions").mock(side_effect=_slow)
+    monkeypatch.setenv("VLLM_BASE_URL", "https://vllm.example")
+    monkeypatch.setenv("VLLM_MODEL", "qwen3-coder")
+
+    req = AgentRunRequest(
+        task="anything",
+        mode="remote",
+        workdir=str(tmp_path),
+        out_dir=str(tmp_path / "out"),
+        max_iterations=1,
+        timeout_s=1,
+    )
+    result = await agent_run(req)
+    assert result.status == "timeout"
+    assert result.error and "timeout" in result.error.lower()
