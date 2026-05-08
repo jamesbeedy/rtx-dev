@@ -88,7 +88,12 @@ from pathlib import Path as _Path
 
 from vllm_agent.api import (
     AgentRunRequest as _AgentRunRequest,
+    AgentSessionStartRequest as _AgentSessionStartRequest,
     agent_run as _agent_run_local,
+    agent_session_start as _ass_local,
+    agent_session_step as _aststep_local,
+    agent_session_status as _aststatus_local,
+    agent_session_stop as _aststop_local,
 )
 from vllm_agent.loop import LoopConfig as _LoopConfig, run_loop as _run_loop
 from vllm_agent.skills import SkillLoader as _SkillLoader
@@ -170,6 +175,42 @@ async def _agent_run_remote(req: _AgentRunRequest) -> dict[str, Any]:
     if r.status_code != 200:
         return {"status": "error", "error": f"VM agent HTTP {r.status_code}: {r.text[:300]}"}
     return r.json()
+
+
+async def _http_session_start(body: dict) -> dict[str, Any]:
+    if not VLLM_AGENT_URL:
+        return {"status": "error", "error": "VLLM_AGENT_URL not set"}
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        r = await client.post(f"{VLLM_AGENT_URL}/session", json=body)
+    return r.json() if r.status_code == 200 else {"status": "error",
+                                                   "error": f"HTTP {r.status_code}: {r.text[:300]}"}
+
+
+async def _http_session_step(session_id: str, body: dict) -> dict[str, Any]:
+    if not VLLM_AGENT_URL:
+        return {"status": "error", "error": "VLLM_AGENT_URL not set"}
+    async with httpx.AsyncClient(timeout=1800.0) as client:
+        r = await client.post(f"{VLLM_AGENT_URL}/session/{session_id}/step", json=body)
+    return r.json() if r.status_code == 200 else {"status": "error",
+                                                   "error": f"HTTP {r.status_code}: {r.text[:300]}"}
+
+
+async def _http_session_status(session_id: str) -> dict[str, Any]:
+    if not VLLM_AGENT_URL:
+        return {"status": "error", "error": "VLLM_AGENT_URL not set"}
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        r = await client.get(f"{VLLM_AGENT_URL}/session/{session_id}")
+    return r.json() if r.status_code == 200 else {"status": "error",
+                                                   "error": f"HTTP {r.status_code}: {r.text[:300]}"}
+
+
+async def _http_session_stop(session_id: str) -> dict[str, Any]:
+    if not VLLM_AGENT_URL:
+        return {"status": "error", "error": "VLLM_AGENT_URL not set"}
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        r = await client.post(f"{VLLM_AGENT_URL}/session/{session_id}/stop")
+    return r.json() if r.status_code == 200 else {"status": "error",
+                                                   "error": f"HTTP {r.status_code}: {r.text[:300]}"}
 
 
 def _vllm_headers() -> dict[str, str]:
@@ -830,6 +871,61 @@ async def agent_run(
         return asdict(result)
     else:
         return await _agent_run_remote(req)
+
+
+@mcp.tool()
+async def agent_session_start(
+    goal: str,
+    skill: str | None = None,
+    mode: str = "remote",
+    workdir: str | None = None,
+    model: str | None = None,
+) -> dict[str, Any]:
+    """Start a long-running agent session. Returns: {session_id, out_dir, status}."""
+    if mode == "local":
+        from dataclasses import asdict
+        req = _AgentSessionStartRequest(goal=goal, skill=skill, mode=mode,
+                                        workdir=workdir, model=model)
+        return asdict(await _ass_local(req))
+    return await _http_session_start({
+        "goal": goal, "skill": skill, "mode": "remote",
+        "workdir": workdir, "model": model,
+    })
+
+
+@mcp.tool()
+async def agent_session_step(
+    session_id: str,
+    nudge: str | None = None,
+    max_iterations: int = 10,
+    mode: str = "remote",
+) -> dict[str, Any]:
+    """Run one step of a session. Returns step metadata including step_status."""
+    if mode == "local":
+        from dataclasses import asdict
+        return asdict(await _aststep_local(session_id, nudge=nudge,
+                                            max_iterations=max_iterations))
+    return await _http_session_step(session_id, {
+        "nudge": nudge, "max_iterations": max_iterations,
+    })
+
+
+@mcp.tool()
+async def agent_session_status(session_id: str, mode: str = "remote") -> dict[str, Any]:
+    """Get the current state of a session."""
+    if mode == "local":
+        from dataclasses import asdict
+        return asdict(await _aststatus_local(session_id))
+    return await _http_session_status(session_id)
+
+
+@mcp.tool()
+async def agent_session_stop(session_id: str, mode: str = "remote") -> dict[str, Any]:
+    """Stop a session. Subsequent steps return immediately with status=stopped."""
+    if mode == "local":
+        from dataclasses import asdict
+        return asdict(await _aststop_local(session_id))
+    return await _http_session_stop(session_id)
 
 
 # =============================================================================
