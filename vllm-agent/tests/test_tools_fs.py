@@ -1,5 +1,5 @@
 import pytest
-from vllm_agent.tools.fs import read_file_tool, write_file_tool, edit_file_tool, grep_tool
+from vllm_agent.tools.fs import read_file_tool, write_file_tool, edit_file_tool, grep_tool, glob_tool
 from vllm_agent.tools import ToolContext
 from vllm_agent.workspace import Workspace
 from vllm_agent.transcript import Transcript
@@ -102,3 +102,19 @@ async def test_grep_no_matches(tmp_path, ctx):
     (tmp_path / "a.txt").write_text("nothing here\n")
     out = await grep_tool.execute({"pattern": "missing"}, ctx)
     assert out["matches"] == []
+
+
+async def test_glob_basic(tmp_path, ctx):
+    (tmp_path / "a.py").write_text("")
+    (tmp_path / "b.py").write_text("")
+    (tmp_path / "c.txt").write_text("")
+    out = await glob_tool.execute({"pattern": "*.py"}, ctx)
+    names = sorted(p.rsplit("/", 1)[-1] for p in out["paths"])
+    assert names == ["a.py", "b.py"]
+
+
+async def test_glob_recursive(tmp_path, ctx):
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "sub" / "deep.py").write_text("")
+    out = await glob_tool.execute({"pattern": "**/*.py"}, ctx)
+    assert any(p.endswith("sub/deep.py") for p in out["paths"])

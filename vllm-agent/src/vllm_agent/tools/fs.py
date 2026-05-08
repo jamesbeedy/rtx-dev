@@ -203,3 +203,34 @@ grep_tool = register(Tool(
     },
     execute=_grep,
 ))
+
+
+# ---- glob -------------------------------------------------------------------
+
+async def _glob(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
+    pattern = args.get("pattern", "")
+    path_arg = args.get("path") or "."
+    base = ctx.workspace.resolve_path(path_arg)
+    paths = [str(p) for p in base.glob(pattern) if p.is_file()][:500]
+    return {"paths": paths, "count": len(paths)}
+
+
+glob_tool = register(Tool(
+    name="glob",
+    schema={
+        "type": "function",
+        "function": {
+            "name": "glob",
+            "description": "Find files in the workspace by glob pattern (e.g. '**/*.py').",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "pattern": {"type": "string"},
+                    "path":    {"type": "string"},
+                },
+                "required": ["pattern"],
+            },
+        },
+    },
+    execute=_glob,
+))
