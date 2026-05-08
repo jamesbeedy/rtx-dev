@@ -108,13 +108,6 @@ Path prefixes route to the right backend:
 Authorization headers (Bearer tokens) are forwarded through nginx
 unchanged. TLS termination is on the roadmap as a future plan.
 
-**Skills in remote mode:** the worker container has no access to the
-orchestrator's `~/.claude` skill cache today. `agent_run(skill="...", mode="remote")`
-will return `SkillNotFound` for skills not bundled into the worker image.
-A future plan will mount or sync the skill content into the container.
-For now, use `extra_context` to pass skill text directly, or run skill-bound
-work in `mode="local"` where the orchestrator's skill cache is reachable.
-
 ## Mode selection guidance
 
 - **Quick read-heavy / generate-only tasks** (review, audit, draft a doc): `local`.
