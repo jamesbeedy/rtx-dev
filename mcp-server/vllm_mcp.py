@@ -116,7 +116,7 @@ from vllm_agent.api import (
     agent_session_stop as _aststop_local,
 )
 from vllm_agent.loop import LoopConfig as _LoopConfig, run_loop as _run_loop
-from vllm_agent.skills import SkillLoader as _SkillLoader
+from vllm_agent.skills import SkillLoader as _SkillLoader, SkillNotFound as _SkillNotFound
 from vllm_agent.tools import ToolContext as _ToolContext
 from vllm_agent.tools import search as _search  # noqa: F401  registers web_search
 from vllm_agent.transcript import Transcript as _Transcript
@@ -188,7 +188,7 @@ async def _agent_run_remote(req: _AgentRunRequest) -> dict[str, Any]:
         "workdir": req.workdir, "out_dir": req.out_dir, "model": req.model,
         "max_iterations": req.max_iterations, "max_tokens": req.max_tokens,
         "temperature": req.temperature, "timeout_s": req.timeout_s,
-        "extra_context": req.extra_context,
+        "extra_context": req.extra_context, "skill_content": req.skill_content,
     }
     async with httpx.AsyncClient(timeout=float(req.timeout_s + 30)) as client:
         r = await client.post(f"{VLLM_AGENT_URL}/run", json=body, headers=_agent_headers())
@@ -876,13 +876,24 @@ async def agent_run(
     `mode='remote'` POSTs to the VM-side vllm-agent serve (worker tools execute
     in the VM; full Bash; requires VLLM_AGENT_URL to be set).
 
+    When `skill` is provided the orchestrator resolves the skill markdown locally
+    and ships the resolved content to the worker via `skill_content`, so the
+    worker never needs filesystem access to the skill definitions.
+
     Returns metadata only: run_id, out_dir, summary_path, files_changed,
     diff_path, iterations, duration_s, status, error, search_log.
     The actual agent output is on disk under out_dir.
     """
+    skill_content: str | None = None
+    if skill:
+        try:
+            skill_content = _SkillLoader().load_skill(skill)
+        except _SkillNotFound as exc:
+            return {"status": "error", "error": str(exc)}
     req = _AgentRunRequest(
-        task=task, skill=skill, mode=mode, workdir=workdir, out_dir=out_dir,
-        model=model, max_iterations=max_iterations, max_tokens=max_tokens,
+        task=task, skill=skill, skill_content=skill_content, mode=mode,
+        workdir=workdir, out_dir=out_dir, model=model,
+        max_iterations=max_iterations, max_tokens=max_tokens,
         temperature=temperature, timeout_s=timeout_s, extra_context=extra_context,
     )
     if mode == "local":
@@ -900,14 +911,26 @@ async def agent_session_start(
     workdir: str | None = None,
     model: str | None = None,
 ) -> dict[str, Any]:
-    """Start a long-running agent session. Returns: {session_id, out_dir, status}."""
+    """Start a long-running agent session. Returns: {session_id, out_dir, status}.
+
+    When `skill` is provided the orchestrator resolves the skill markdown locally
+    and ships the resolved content to the worker via `skill_content`, so the
+    worker never needs filesystem access to the skill definitions.
+    """
+    skill_content: str | None = None
+    if skill:
+        try:
+            skill_content = _SkillLoader().load_skill(skill)
+        except _SkillNotFound as exc:
+            return {"status": "error", "error": str(exc)}
     if mode == "local":
-        req = _AgentSessionStartRequest(goal=goal, skill=skill, mode=mode,
-                                        workdir=workdir, model=model)
+        req = _AgentSessionStartRequest(goal=goal, skill=skill,
+                                        skill_content=skill_content,
+                                        mode=mode, workdir=workdir, model=model)
         return asdict(await _ass_local(req))
     return await _http_session_start({
-        "goal": goal, "skill": skill, "mode": "remote",
-        "workdir": workdir, "model": model,
+        "goal": goal, "skill": skill, "skill_content": skill_content,
+        "mode": "remote", "workdir": workdir, "model": model,
     })
 
 
