@@ -56,3 +56,42 @@ def test_session_stop_404_for_unknown(client, tmp_path, monkeypatch):
     monkeypatch.setenv("VLLM_AGENT_SESSION_ROOT", str(tmp_path / "sessions"))
     r = client.post("/session/does-not-exist/stop")
     assert r.status_code == 404
+
+
+@respx.mock
+def test_session_full_lifecycle(client, tmp_path, monkeypatch):
+    """Start → step → status → stop, all via HTTP."""
+    respx.post("https://vllm.example/v1/chat/completions").mock(
+        return_value=Response(200, json={
+            "choices": [{"message": {"content": "ok", "tool_calls": []}}]
+        })
+    )
+    monkeypatch.setenv("VLLM_BASE_URL", "https://vllm.example")
+    monkeypatch.setenv("VLLM_MODEL", "qwen3-coder")
+    monkeypatch.setenv("VLLM_AGENT_SESSION_ROOT", str(tmp_path / "sessions"))
+
+    r = client.post("/session", json={"goal": "g", "workdir": str(tmp_path)})
+    assert r.status_code == 200
+    sid = r.json()["session_id"]
+    assert r.json()["status"] == "running"
+
+    r = client.post(f"/session/{sid}/step", json={"max_iterations": 2})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["session_id"] == sid
+    assert body["status"] == "completed"
+    assert body["step_status"] == "ok"
+
+    r = client.get(f"/session/{sid}")
+    assert r.status_code == 200
+    assert r.json()["iterations_total"] == 1
+
+    r = client.post(f"/session/{sid}/stop")
+    assert r.status_code == 200
+    assert r.json()["status"] == "stopped"
+
+
+def test_session_status_404(client, tmp_path, monkeypatch):
+    monkeypatch.setenv("VLLM_AGENT_SESSION_ROOT", str(tmp_path / "sessions"))
+    r = client.get("/session/does-not-exist")
+    assert r.status_code == 404
