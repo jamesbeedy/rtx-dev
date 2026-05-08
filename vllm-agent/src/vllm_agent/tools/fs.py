@@ -134,3 +134,72 @@ edit_file_tool = register(Tool(
     },
     execute=_edit_file,
 ))
+
+
+# ---- grep -------------------------------------------------------------------
+
+import re
+import shutil
+import subprocess
+
+
+async def _grep(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
+    pattern = args.get("pattern", "")
+    glob = args.get("glob")
+    path_arg = args.get("path") or "."
+    base = ctx.workspace.resolve_path(path_arg)
+
+    # Prefer ripgrep if available; otherwise fall back to a Python walk.
+    if shutil.which("rg"):
+        cmd = ["rg", "--line-number", "--no-heading", "--color=never", pattern]
+        if glob:
+            cmd += ["--glob", glob]
+        cmd.append(str(base))
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        matches: list[dict[str, Any]] = []
+        for line in proc.stdout.splitlines():
+            try:
+                p, ln, body = line.split(":", 2)
+                matches.append({"path": p, "line": int(ln), "text": body})
+            except ValueError:
+                continue
+        return {"matches": matches[:200], "tool": "rg"}
+
+    # Python fallback.
+    rx = re.compile(pattern)
+    matches = []
+    iterator = base.rglob(glob) if glob else base.rglob("*")
+    for fp in iterator:
+        if not fp.is_file():
+            continue
+        try:
+            for i, line in enumerate(fp.read_text().splitlines(), start=1):
+                if rx.search(line):
+                    matches.append({"path": str(fp), "line": i, "text": line})
+                    if len(matches) >= 200:
+                        return {"matches": matches, "tool": "python"}
+        except (UnicodeDecodeError, PermissionError):
+            continue
+    return {"matches": matches, "tool": "python"}
+
+
+grep_tool = register(Tool(
+    name="grep",
+    schema={
+        "type": "function",
+        "function": {
+            "name": "grep",
+            "description": "Search the workspace for a regex pattern. Uses ripgrep if available.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "pattern": {"type": "string"},
+                    "path":    {"type": "string", "description": "Subpath to search; default = workspace root."},
+                    "glob":    {"type": "string", "description": "Optional glob filter, e.g. '*.py'."},
+                },
+                "required": ["pattern"],
+            },
+        },
+    },
+    execute=_grep,
+))

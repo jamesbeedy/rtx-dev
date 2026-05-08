@@ -1,5 +1,5 @@
 import pytest
-from vllm_agent.tools.fs import read_file_tool, write_file_tool, edit_file_tool
+from vllm_agent.tools.fs import read_file_tool, write_file_tool, edit_file_tool, grep_tool
 from vllm_agent.tools import ToolContext
 from vllm_agent.workspace import Workspace
 from vllm_agent.transcript import Transcript
@@ -78,3 +78,27 @@ async def test_edit_file_old_not_found(tmp_path, ctx):
     out = await edit_file_tool.execute(
         {"path": "f.txt", "old": "missing", "new": "x"}, ctx)
     assert "error" in out
+
+
+async def test_grep_basic(tmp_path, ctx):
+    (tmp_path / "a.py").write_text("def hello():\n    return 1\n")
+    (tmp_path / "b.py").write_text("def world():\n    return 2\n")
+    out = await grep_tool.execute({"pattern": "return"}, ctx)
+    paths = {m["path"] for m in out["matches"]}
+    assert any(p.endswith("a.py") for p in paths)
+    assert any(p.endswith("b.py") for p in paths)
+
+
+async def test_grep_with_glob(tmp_path, ctx):
+    (tmp_path / "a.py").write_text("hit\n")
+    (tmp_path / "a.txt").write_text("hit\n")
+    out = await grep_tool.execute({"pattern": "hit", "glob": "*.py"}, ctx)
+    paths = {m["path"] for m in out["matches"]}
+    assert any(p.endswith("a.py") for p in paths)
+    assert not any(p.endswith("a.txt") for p in paths)
+
+
+async def test_grep_no_matches(tmp_path, ctx):
+    (tmp_path / "a.txt").write_text("nothing here\n")
+    out = await grep_tool.execute({"pattern": "missing"}, ctx)
+    assert out["matches"] == []
