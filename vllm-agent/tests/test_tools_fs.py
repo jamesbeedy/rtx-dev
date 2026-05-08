@@ -1,5 +1,5 @@
 import pytest
-from vllm_agent.tools.fs import read_file_tool, write_file_tool
+from vllm_agent.tools.fs import read_file_tool, write_file_tool, edit_file_tool
 from vllm_agent.tools import ToolContext
 from vllm_agent.workspace import Workspace
 from vllm_agent.transcript import Transcript
@@ -43,3 +43,38 @@ async def test_write_file_overwrites(tmp_path, ctx):
     (tmp_path / "x.txt").write_text("old")
     await write_file_tool.execute({"path": "x.txt", "content": "new"}, ctx)
     assert (tmp_path / "x.txt").read_text() == "new"
+
+
+async def test_edit_file_basic(tmp_path, ctx):
+    p = tmp_path / "f.txt"
+    p.write_text("foo bar baz")
+    out = await edit_file_tool.execute(
+        {"path": "f.txt", "old": "bar", "new": "BAR"}, ctx)
+    assert p.read_text() == "foo BAR baz"
+    assert out["replacements"] == 1
+
+
+async def test_edit_file_old_not_unique_errors(tmp_path, ctx):
+    p = tmp_path / "f.txt"
+    p.write_text("x x x")
+    out = await edit_file_tool.execute(
+        {"path": "f.txt", "old": "x", "new": "y"}, ctx)
+    assert "error" in out
+    assert p.read_text() == "x x x"
+
+
+async def test_edit_file_replace_all(tmp_path, ctx):
+    p = tmp_path / "f.txt"
+    p.write_text("x x x")
+    out = await edit_file_tool.execute(
+        {"path": "f.txt", "old": "x", "new": "y", "replace_all": True}, ctx)
+    assert p.read_text() == "y y y"
+    assert out["replacements"] == 3
+
+
+async def test_edit_file_old_not_found(tmp_path, ctx):
+    p = tmp_path / "f.txt"
+    p.write_text("hello")
+    out = await edit_file_tool.execute(
+        {"path": "f.txt", "old": "missing", "new": "x"}, ctx)
+    assert "error" in out
