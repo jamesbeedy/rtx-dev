@@ -7,10 +7,10 @@ from vllm_agent.skills import SkillLoader, SkillNotFound
 def fake_roots(tmp_path):
     """Build a fake skill-root layout under tmp_path."""
     proj = tmp_path / "project_skills"
-    user = tmp_path / "user_skills"
+    user = tmp_path / ".claude" / "skills"
     sp = tmp_path / "superpowers" / "claude-plugins-official" / "superpowers" / "5.1.0" / "skills"
     sp.mkdir(parents=True)
-    user.mkdir()
+    user.mkdir(parents=True)
     proj.mkdir()
 
     # superpowers:test-driven-development

@@ -23,11 +23,10 @@ def _default_roots() -> list[Path]:
 
 def _source_for_root(root: Path) -> str:
     """Pick a readable namespace prefix for skills under this root."""
-    root_str = str(root)
-    if "claude-plugins-official" in root_str:
+    parts = root.parts
+    if "claude-plugins-official" in parts:
         return "superpowers"
-    # User roots are determined by being under .claude or being named user_skills (for test fixture)
-    if ".claude" in root_str or root.name == "user_skills":
+    if root.name == "skills" and ".claude" in parts:
         return "user"
     return "project"
 
