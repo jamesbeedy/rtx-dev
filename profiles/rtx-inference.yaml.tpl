@@ -64,7 +64,7 @@ config:
       - systemctl enable vllm.service
 
       # Install vllm-agent from the rtx_5090_dev repo
-      - su - ubuntu -c 'cd ~ && (test -d rtx_5090_dev || git clone https://github.com/vantagecompute/rtx-inference.git rtx_5090_dev) && cd rtx_5090_dev/vllm-agent && uv venv .venv-agent && .venv-agent/bin/pip install -e .'
+      - su - ubuntu -c 'cd ~ && (test -d rtx_5090_dev || git clone https://github.com/vantagecompute/rtx-inference.git rtx_5090_dev) && cd rtx_5090_dev/vllm-agent && python3 -m venv .venv-agent && .venv-agent/bin/pip install --upgrade pip && .venv-agent/bin/pip install -e .'
 
       # Install systemd unit for vllm-agent serve
       - |

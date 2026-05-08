@@ -79,6 +79,24 @@ def _files_changed(before: dict[str, float], workdir: Path) -> list[str]:
     return sorted(str(Path(p).relative_to(workdir)) for p in changed)
 
 
+def _capture_diff(workdir: Path, out_dir: Path) -> str | None:
+    """If workdir is a git repo, write `git diff` to diff.patch and return its path."""
+    if not (workdir / ".git").is_dir():
+        return None
+    import subprocess
+    try:
+        proc = subprocess.run(
+            ["git", "diff", "--no-color"],
+            cwd=str(workdir),
+            capture_output=True, text=True, timeout=30,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return None
+    diff_path = out_dir / "diff.patch"
+    diff_path.write_text(proc.stdout)
+    return str(diff_path)
+
+
 def _extract_search_log(transcript_path: Path) -> list[dict]:
     """Pull web_search records out of the transcript JSONL."""
     if not transcript_path.exists():
@@ -152,9 +170,10 @@ async def agent_run(req: AgentRunRequest) -> AgentRunResult:
         summary_path = out_dir / "summary.md"
         if not summary_path.exists():
             summary_path.write_text("(timed out before finish)")
+        diff_path = _capture_diff(ws.root, out_dir)
         return AgentRunResult(
             run_id=run_id, out_dir=str(out_dir), summary_path=str(summary_path),
-            files_changed=files_changed, diff_path=None,
+            files_changed=files_changed, diff_path=diff_path,
             iterations=0, duration_s=round(duration, 2),
             status="timeout", error=f"agent_run exceeded timeout_s={req.timeout_s}",
             search_log=_extract_search_log(out_dir / "transcript.jsonl"),
@@ -170,12 +189,13 @@ async def agent_run(req: AgentRunRequest) -> AgentRunResult:
         body = loop_result.final_message_content or "(no final summary; worker did not call finish())"
         summary_path.write_text(body)
 
+    diff_path = _capture_diff(ws.root, out_dir)
     return AgentRunResult(
         run_id=run_id,
         out_dir=str(out_dir),
         summary_path=str(summary_path),
         files_changed=files_changed,
-        diff_path=None,   # filled in Plan B (git diff after run, when in remote mode)
+        diff_path=diff_path,
         iterations=loop_result.iterations,
         duration_s=round(duration, 2),
         status=loop_result.status,

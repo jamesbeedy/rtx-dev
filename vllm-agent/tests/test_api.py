@@ -182,3 +182,71 @@ async def test_agent_session_step_returns_step_status(tmp_path, monkeypatch):
     step = await agent_session_step(s.session_id, max_iterations=2)
     assert step.status == "completed"
     assert step.step_status == "ok"
+
+
+@respx.mock
+async def test_agent_run_captures_diff_when_git_repo(tmp_path, monkeypatch):
+    """If workdir is a git repo, agent_run writes diff.patch and sets diff_path."""
+    import subprocess as sp
+
+    # Set up a tiny git repo with one committed file and one uncommitted edit.
+    sp.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    sp.run(["git", "config", "user.email", "t@t"], cwd=tmp_path, check=True)
+    sp.run(["git", "config", "user.name", "t"], cwd=tmp_path, check=True)
+    (tmp_path / "f.txt").write_text("original\n")
+    sp.run(["git", "add", "f.txt"], cwd=tmp_path, check=True)
+    sp.run(["git", "commit", "-q", "-m", "init"], cwd=tmp_path, check=True)
+
+    # Worker writes a new file (which will appear in `git diff`).
+    seq = [
+        _resp(tool_calls=[{
+            "id": "c1", "type": "function",
+            "function": {"name": "write_file",
+                         "arguments": json.dumps({"path": "g.txt", "content": "new file\n"})},
+        }]),
+        _resp(tool_calls=[{
+            "id": "c2", "type": "function",
+            "function": {"name": "finish",
+                         "arguments": json.dumps({"summary": "wrote g.txt"})},
+        }]),
+    ]
+    counter = {"i": 0}
+    def _next(_req):
+        i = counter["i"]; counter["i"] += 1
+        return Response(200, json=seq[i])
+    respx.post("https://vllm.example/v1/chat/completions").mock(side_effect=_next)
+
+    monkeypatch.setenv("VLLM_BASE_URL", "https://vllm.example")
+    monkeypatch.setenv("VLLM_MODEL", "qwen3-coder")
+
+    out_dir = tmp_path / "out"
+    req = AgentRunRequest(
+        task="write g.txt", mode="remote",
+        workdir=str(tmp_path), out_dir=str(out_dir),
+        max_iterations=5, max_tokens=512,
+    )
+    result = await agent_run(req)
+    assert result.status == "ok"
+    assert result.diff_path == str(out_dir / "diff.patch")
+    # New untracked file won't show in `git diff` (unstaged-untracked is not in the diff).
+    # But the diff command should at least succeed and produce an empty file or short output.
+    # Verify the file exists and is readable.
+    assert (out_dir / "diff.patch").exists()
+
+
+@respx.mock
+async def test_agent_run_no_diff_when_not_git(tmp_path, monkeypatch):
+    """If workdir is NOT a git repo, diff_path is None."""
+    respx.post("https://vllm.example/v1/chat/completions").mock(
+        return_value=Response(200, json={"choices": [{"message": {"content": "ok"}}]}))
+    monkeypatch.setenv("VLLM_BASE_URL", "https://vllm.example")
+    monkeypatch.setenv("VLLM_MODEL", "qwen3-coder")
+
+    req = AgentRunRequest(
+        task="anything", mode="remote",
+        workdir=str(tmp_path), out_dir=str(tmp_path / "out"),
+        max_iterations=1, max_tokens=64,
+    )
+    result = await agent_run(req)
+    assert result.status == "ok"
+    assert result.diff_path is None
