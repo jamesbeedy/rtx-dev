@@ -10,6 +10,7 @@ from typing import Any
 
 from .loop import LoopConfig, run_loop
 from .prompts import build_system_prompt, build_user_prompt
+from .sessions import SessionStore, SessionStatus
 from .skills import SkillLoader
 from .tools import ToolContext, WORKER_TOOLS  # noqa: F401  (force tool registration)
 from .tools import fs as _fs                  # noqa: F401
@@ -141,8 +142,6 @@ async def agent_run(req: AgentRunRequest) -> AgentRunResult:
 
 # ---- session API ------------------------------------------------------------
 
-from .sessions import SessionStore, SessionStatus
-
 DEFAULT_SESSION_ROOT = Path("~/.cache/vllm-agent/sessions").expanduser()
 
 
@@ -255,13 +254,14 @@ async def agent_session_step(
         store.set_status(session_id, SessionStatus.COMPLETED)
     elif loop_result.status == "error":
         store.set_status(session_id, SessionStatus.ERRORED)
+    # else (max_iterations): leave as RUNNING for resumption.
 
     return AgentSessionStepResult(
         session_id=session_id,
         iterations_this_step=loop_result.iterations,
         files_changed_this_step=files_changed,
         summary_path=str(sess_dir / "summary.md"),
-        status=loop_result.status,
+        status=store.load(session_id).status.value,
     )
 
 

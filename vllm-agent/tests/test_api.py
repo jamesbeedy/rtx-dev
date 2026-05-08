@@ -84,7 +84,7 @@ async def test_agent_session_start_step_status_stop(tmp_path, monkeypatch):
     assert s.status == "running"
 
     step = await agent_session_step(s.session_id, nudge=None, max_iterations=3)
-    assert step.status == "ok"
+    assert step.status == "completed"
     assert step.iterations_this_step == 1
 
     status = await agent_session_status(s.session_id)
