@@ -539,24 +539,7 @@ async def scaffold(
     require_files: list[str] | None = None,
     max_retries: int = 2,
 ) -> dict[str, Any]:
-    """Multi-file project generation. Parses `=== FILE: relative/path === ...`
-    blocks from the model output and writes each under `out_dir`. None of the
-    generated content enters Claude's context.
-
-    Args:
-        minimize_search: When True (default), the system prompt strongly
-            discourages web_search use — observed in practice that the model
-            otherwise burns its token budget on searches before emitting code.
-            Set False to revert to the encouraging prompt.
-        require_files: Optional list of relative paths that must end up on disk.
-            If any are missing after the first pass, scaffold automatically fires
-            up to `max_retries` follow-up generations asking only for the
-            missing files (uses the same out_dir, sys_prompt and model).
-        max_retries: Cap on follow-up rounds for `require_files`. Default 2.
-
-    Returns: {"out_dir", "files", "n_files", "iterations", "retries",
-              "search_log", "duration_s", "warnings", "missing_required"}.
-    """
+    """Multi-file project generation. (See module docstring for details.)"""
     if system is not None:
         sys_prompt = system
     elif minimize_search:
@@ -579,32 +562,28 @@ async def scaffold(
             "FILE blocks — no preamble, no commentary."
         )
 
-    base = Path(out_dir).expanduser().resolve()
+    base = _Path(out_dir).expanduser().resolve()
     base.mkdir(parents=True, exist_ok=True)
 
     msgs = [
         {"role": "system", "content": sys_prompt},
         {"role": "user", "content": prompt},
     ]
-
     t0 = time.perf_counter()
-    result = await _generate(
-        msgs, model=model, max_iterations=max_iterations,
-        max_results=max_results, max_tokens=max_tokens, temperature=temperature,
+    result_dict = await _run_via_vllm_agent(
+        msgs, out_dir=base, model=model,
+        max_iterations=max_iterations, max_tokens=max_tokens,
+        temperature=temperature,
     )
-
-    written, warnings = _parse_and_write(result["answer"], base)
-    iterations_total = result["iterations"]
-    search_log = list(result["search_log"])
+    written, warnings = _parse_and_write(result_dict["answer"], base)
+    iterations_total = result_dict["iterations"]
+    search_log = list(result_dict["search_log"])
     retries_used = 0
 
-    # Auto-retry for missing required files.
     if require_files:
         required_set = {p.lstrip("./").rstrip("/") for p in require_files}
         for _ in range(max_retries):
-            written_rels = {
-                Path(w["path"]).relative_to(base).as_posix() for w in written
-            }
+            written_rels = {Path(w["path"]).relative_to(base).as_posix() for w in written}
             missing = sorted(required_set - written_rels)
             if not missing:
                 break
@@ -617,14 +596,14 @@ async def scaffold(
                 "Original task (for context):\n"
                 + (prompt[:1500] + (" ... [truncated]" if len(prompt) > 1500 else ""))
             )
-            retry_result = await _generate(
+            retry_result = await _run_via_vllm_agent(
                 [
                     {"role": "system", "content": sys_prompt},
                     {"role": "user", "content": retry_prompt},
                 ],
-                model=model, max_iterations=max_iterations,
-                max_results=max_results, max_tokens=max_tokens,
-                temperature=temperature,
+                out_dir=base, model=model,
+                max_iterations=max_iterations,
+                max_tokens=max_tokens, temperature=temperature,
             )
             retry_written, retry_warnings = _parse_and_write(retry_result["answer"], base)
             written.extend(retry_written)
@@ -632,7 +611,6 @@ async def scaffold(
             iterations_total += retry_result["iterations"]
             search_log.extend(retry_result["search_log"])
             if not retry_written:
-                # Avoid infinite loops if a retry produces nothing.
                 warnings.append(f"Retry {retries_used} produced no FILE blocks; aborting.")
                 break
 
@@ -644,9 +622,7 @@ async def scaffold(
     final_missing: list[str] = []
     if require_files:
         written_rels = {Path(w["path"]).relative_to(base).as_posix() for w in written}
-        final_missing = sorted(
-            {p.lstrip("./").rstrip("/") for p in require_files} - written_rels
-        )
+        final_missing = sorted({p.lstrip("./").rstrip("/") for p in require_files} - written_rels)
 
     return {
         "out_dir": str(base),
@@ -674,9 +650,6 @@ async def critique(
     include_log: bool = False,
 ) -> dict[str, Any]:
     """Take an original task + a draft answer; produce a corrected version.
-    The model has `web_search` available (useful for verifying API names,
-    deprecations, version numbers). The corrected output is written to
-    `out_path` — only metadata returns.
 
     Returns the same metadata shape as `ask`.
     """
@@ -698,17 +671,20 @@ async def critique(
         {"role": "system", "content": system},
         {"role": "user", "content": user},
     ]
+    p = _Path(out_path).expanduser()
+    out_dir_ag = p.parent if p.parent != _Path("") else _Path.cwd()
     t0 = time.perf_counter()
-    result = await _generate(
-        msgs, model=model, max_iterations=max_iterations,
-        max_results=max_results, max_tokens=max_tokens, temperature=temperature,
+    result = await _run_via_vllm_agent(
+        msgs, out_dir=out_dir_ag, model=model,
+        max_iterations=max_iterations, max_tokens=max_tokens,
+        temperature=temperature,
     )
     elapsed = time.perf_counter() - t0
-    p = _write_answer(out_path, result["answer"], result["search_log"],
-                      result["iterations"], include_log)
+    p_written = _write_answer(out_path, result["answer"], result["search_log"],
+                              result["iterations"], include_log)
     return {
-        "path": str(p),
-        "bytes_written": p.stat().st_size,
+        "path": str(p_written),
+        "bytes_written": p_written.stat().st_size,
         "iterations": result["iterations"],
         "search_log": result["search_log"],
         "duration_s": round(elapsed, 2),
