@@ -69,13 +69,19 @@ async def health() -> dict:
 
 @app.post("/run", dependencies=[Depends(require_key)])
 async def run(body: RunBody) -> dict:
-    result = await agent_run(AgentRunRequest(**body.model_dump()))
+    try:
+        result = await agent_run(AgentRunRequest(**body.model_dump()))
+    except (FileNotFoundError, NotADirectoryError, PermissionError) as e:
+        raise HTTPException(400, str(e))
     return asdict(result)
 
 
 @app.post("/session", dependencies=[Depends(require_key)])
 async def session_start(body: SessionStartBody) -> dict:
-    result = await agent_session_start(AgentSessionStartRequest(**body.model_dump()))
+    try:
+        result = await agent_session_start(AgentSessionStartRequest(**body.model_dump()))
+    except (FileNotFoundError, NotADirectoryError, PermissionError) as e:
+        raise HTTPException(400, str(e))
     return asdict(result)
 
 
