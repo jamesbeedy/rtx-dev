@@ -86,6 +86,10 @@ mcp = FastMCP("vllm-inference")
 # ---------------------------------------------------------------------------
 from pathlib import Path as _Path
 
+from vllm_agent.api import (
+    AgentRunRequest as _AgentRunRequest,
+    agent_run as _agent_run_local,
+)
 from vllm_agent.loop import LoopConfig as _LoopConfig, run_loop as _run_loop
 from vllm_agent.skills import SkillLoader as _SkillLoader
 from vllm_agent.tools import ToolContext as _ToolContext
@@ -147,6 +151,25 @@ async def _run_via_vllm_agent(
         "iterations": result.iterations,
         "search_log": search_log,
     }
+
+
+async def _agent_run_remote(req: _AgentRunRequest) -> dict[str, Any]:
+    """POST the request to the VM's vllm-agent serve endpoint."""
+    if not VLLM_AGENT_URL:
+        return {"status": "error",
+                "error": "VLLM_AGENT_URL not set; cannot use mode=remote"}
+    body = {
+        "task": req.task, "skill": req.skill, "mode": "remote",
+        "workdir": req.workdir, "out_dir": req.out_dir, "model": req.model,
+        "max_iterations": req.max_iterations, "max_tokens": req.max_tokens,
+        "temperature": req.temperature, "timeout_s": req.timeout_s,
+        "extra_context": req.extra_context,
+    }
+    async with httpx.AsyncClient(timeout=float(req.timeout_s + 30)) as client:
+        r = await client.post(f"{VLLM_AGENT_URL}/run", json=body)
+    if r.status_code != 200:
+        return {"status": "error", "error": f"VM agent HTTP {r.status_code}: {r.text[:300]}"}
+    return r.json()
 
 
 def _vllm_headers() -> dict[str, str]:
@@ -765,6 +788,48 @@ def verify_project(
         "checks": checks,
         "summary": _summary(checks),
     }
+
+
+# =============================================================================
+# Tools: agent dispatch
+# =============================================================================
+
+@mcp.tool()
+async def agent_run(
+    task: str,
+    skill: str | None = None,
+    mode: str = "remote",
+    workdir: str | None = None,
+    out_dir: str | None = None,
+    model: str | None = None,
+    max_iterations: int = 30,
+    max_tokens: int = 4096,
+    temperature: float = 0.2,
+    timeout_s: int = 1800,
+    extra_context: list[str] | None = None,
+) -> dict[str, Any]:
+    """Dispatch a coding-agent task to the vllm-rtx5090 backend.
+
+    `mode='local'` runs the agent loop in this process (worker tools execute on
+    the user's machine; bash requires VLLM_AGENT_LOCAL_BASH=1).
+    `mode='remote'` POSTs to the VM-side vllm-agent serve (worker tools execute
+    in the VM; full Bash; requires VLLM_AGENT_URL to be set).
+
+    Returns metadata only: run_id, out_dir, summary_path, files_changed,
+    diff_path, iterations, duration_s, status, error, search_log.
+    The actual agent output is on disk under out_dir.
+    """
+    req = _AgentRunRequest(
+        task=task, skill=skill, mode=mode, workdir=workdir, out_dir=out_dir,
+        model=model, max_iterations=max_iterations, max_tokens=max_tokens,
+        temperature=temperature, timeout_s=timeout_s, extra_context=extra_context,
+    )
+    if mode == "local":
+        from dataclasses import asdict
+        result = await _agent_run_local(req)
+        return asdict(result)
+    else:
+        return await _agent_run_remote(req)
 
 
 # =============================================================================
