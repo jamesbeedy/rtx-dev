@@ -63,6 +63,7 @@ DEFAULT_SYSTEM = os.environ.get(
     ),
 )
 _DDG_MIN_INTERVAL = float(os.environ.get("DDG_MIN_INTERVAL_S", "1.5"))
+VLLM_AGENT_URL = os.environ.get("VLLM_AGENT_URL", "")  # e.g. http://10.x.y.z:8088
 
 # import-name → PyPI distribution-name aliases for verify_project
 _IMPORT_TO_DIST = {
@@ -86,6 +87,7 @@ mcp = FastMCP("vllm-inference")
 from pathlib import Path as _Path
 
 from vllm_agent.loop import LoopConfig as _LoopConfig, run_loop as _run_loop
+from vllm_agent.skills import SkillLoader as _SkillLoader
 from vllm_agent.tools import ToolContext as _ToolContext
 from vllm_agent.tools import search as _search  # noqa: F401  registers web_search
 from vllm_agent.transcript import Transcript as _Transcript
@@ -763,6 +765,19 @@ def verify_project(
         "checks": checks,
         "summary": _summary(checks),
     }
+
+
+# =============================================================================
+# Tools: skill discovery
+# =============================================================================
+
+@mcp.tool()
+async def list_skills() -> list[dict[str, Any]]:
+    """List all skills discoverable from configured roots (project, user,
+    superpowers). Returns: [{"name", "source", "path", "description"}, ...].
+    Skill names are passed to `agent_run(skill=...)` and `agent_session_start(skill=...)`.
+    """
+    return _SkillLoader().list_skills()
 
 
 def main() -> None:
