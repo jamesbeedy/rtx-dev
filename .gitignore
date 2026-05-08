@@ -1,5 +1,5 @@
 # docker compose secrets — generated on the VM by launch-inference.sh
-.env
+#.env
 
 # Local MCP config — holds VLLM_API_KEY / VLLM_AGENT_API_KEY
-.mcp.json
+#.mcp.json
