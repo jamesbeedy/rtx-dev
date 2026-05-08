@@ -1,0 +1,69 @@
+# Single-host docker compose stack inside the rtx5090 LXD VM.
+# Three services: vllm (upstream image), vllm-agent (our code, bind-mounted),
+# nginx (path-prefix reverse proxy on :8443).
+# See docs/superpowers/specs/2026-05-08-docker-compose-stack-design.md.
+
+services:
+  vllm:
+    image: vllm/vllm-openai:latest
+    restart: unless-stopped
+    gpus: all
+    volumes:
+      - hf-cache:/root/.cache/huggingface
+    environment:
+      - VLLM_API_KEY=${VLLM_API_KEY}
+    command: >
+      --model ${VLLM_MODEL}
+      --max-model-len ${VLLM_MAX_LEN}
+      --gpu-memory-utilization ${VLLM_GPU_UTIL}
+      --port 8000 --host 0.0.0.0
+      --quantization ${VLLM_QUANT_ARGS}
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/v1/models"]
+      interval: 30s
+      timeout: 5s
+      retries: 30
+      start_period: 600s
+
+  vllm-agent:
+    image: python:3.12-slim
+    restart: unless-stopped
+    user: "1000:1000"
+    depends_on:
+      vllm:
+        condition: service_healthy
+    volumes:
+      - /home/ubuntu/rtx_5090_dev/vllm-agent:/app
+      - /home/ubuntu/.claude:/skills:ro
+      - vllm-agent-sessions:/var/lib/vllm-agent/sessions
+      - vllm-agent-runs:/home/agent/.cache/vllm-agent/runs
+    environment:
+      - HOME=/home/agent
+      - VLLM_BASE_URL=http://vllm:8000
+      - VLLM_MODEL=${VLLM_MODEL}
+      - VLLM_API_KEY=${VLLM_API_KEY}
+      - VLLM_AGENT_API_KEY=${VLLM_AGENT_API_KEY}
+      - DDG_MIN_INTERVAL_S=${DDG_MIN_INTERVAL_S}
+      - VLLM_AGENT_SESSION_ROOT=/var/lib/vllm-agent/sessions
+      - PATH=/home/agent/.local/bin:/usr/local/bin:/usr/bin:/bin
+    command: >
+      bash -c "
+      mkdir -p /home/agent/.cache/vllm-agent/runs &&
+      pip install --quiet --user --no-warn-script-location -e /app &&
+      exec vllm-agent serve --host 0.0.0.0 --port 8088
+      "
+
+  nginx:
+    image: nginx:alpine
+    restart: unless-stopped
+    depends_on:
+      - vllm-agent
+    volumes:
+      - ./compose/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    ports:
+      - "8443:8443"
+
+volumes:
+  hf-cache:
+  vllm-agent-sessions:
+  vllm-agent-runs:
