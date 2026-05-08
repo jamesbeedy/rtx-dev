@@ -51,6 +51,10 @@ Don't paste raw transcript into the conversation.
 They now delegate to vllm-agent internally with `tools_subset=["web_search"]`,
 so they behave as before but share infrastructure with the agent runtime.
 
+The deployment is a docker compose stack inside an LXD VM (vllm, vllm-agent,
+nginx) — see README for details. From the orchestrator's perspective the
+tool surface is unchanged.
+
 ## Existing memory
 
 If `~/.claude/projects/-home-bdx-allcode-github-vantagecompute-rtx-5090-dev/memory/`

@@ -6,14 +6,24 @@ and iterative coding work to the local 5090.
 
 ## Components
 
-- **vLLM** — runs in an LXD VM with GPU passthrough, serves an OpenAI-compatible
-  chat-completions endpoint.
-- **vllm-agent** — a Python runtime that wraps vLLM with worker tools
-  (read_file, write_file, edit_file, bash, grep, glob, web_search, finish), a
-  tool-calling loop, skill loading, and session storage. Runs both as a Python
-  library and as a FastAPI HTTP server (`vllm-agent serve`) inside the VM.
-- **mcp-server** — the MCP shim that exposes vllm-agent's capabilities to
-  Claude Code.
+The deployment is a docker compose stack running inside an LXD VM with GPU
+passthrough. Three services:
+
+- **vllm** — upstream `vllm/vllm-openai` image with the model + quant args
+  passed via env-substituted `command:`. Bind-mounts an `hf-cache` named
+  volume for model weights. GPU exposed via nvidia-container-toolkit.
+- **vllm-agent** — `python:3.12-slim` running the `vllm-agent serve` HTTP
+  API. Source bind-mounted from `/home/ubuntu/rtx_5090_dev/vllm-agent`;
+  `pip install -e` runs at container start. Reaches vllm at
+  `http://vllm:8000` over the compose internal network.
+- **nginx** — `nginx:alpine` with path-prefix routing on `:8443`:
+  `/v1/*` → vllm, `/agent/*` → vllm-agent. The only externally-reachable
+  port on the VM.
+
+Outside the VM:
+
+- **mcp-server** — local MCP shim on the orchestrator's machine; talks to
+  the VM via the unified `:8443` endpoint.
 
 ## Provisioning
 
@@ -23,9 +33,16 @@ and iterative coding work to the local 5090.
 
 This:
 1. Creates an LXD VM with GPU passthrough.
-2. Installs vLLM and serves it on port 8000.
-3. Installs `vllm-agent serve` as a systemd unit on port 8088.
-4. Updates `.mcp.json` with the VM's URLs (`VLLM_BASE_URL`, `VLLM_AGENT_URL`).
+2. Cloud-init installs Docker CE + nvidia-container-toolkit + the NVIDIA
+   open kernel module, then reboots.
+3. Tar/scp/lxc-file-push the local repo into the VM at
+   `/home/ubuntu/rtx_5090_dev`.
+4. Generates `/home/ubuntu/rtx_5090_dev/.env` (mode 0600) from CLI args.
+5. Runs `docker compose pull && docker compose up -d` as the ubuntu user.
+6. Polls `/v1/models` and `/agent/skills` through nginx until both
+   backends are responsive.
+7. Updates `.mcp.json` with `VLLM_BASE_URL=http://<VM>:8443` and
+   `VLLM_AGENT_URL=http://<VM>:8443/agent`.
 
 After it returns, restart Claude Code (or reload the MCP server) and the new
 tools below will be available.
@@ -73,6 +90,23 @@ Everything is written to `out_dir`:
 
 Claude gets only paths + metadata. To see actual content, Claude `Read`s the
 file itself.
+
+## URL layout
+
+The VM exposes a single port (`8443`) running nginx as a compose service.
+Path prefixes route to the right backend:
+
+| External URL                     | Backend                  |
+|----------------------------------|--------------------------|
+| `http://VM:8443/v1/...`          | vllm (OpenAI-compatible) |
+| `http://VM:8443/health`          | vllm liveness probe      |
+| `http://VM:8443/agent/run`       | vllm-agent /run          |
+| `http://VM:8443/agent/session/*` | vllm-agent /session/*    |
+| `http://VM:8443/agent/skills`    | vllm-agent /skills       |
+| `http://VM:8443/agent/artifacts` | vllm-agent /artifacts    |
+
+Authorization headers (Bearer tokens) are forwarded through nginx
+unchanged. TLS termination is on the roadmap as a future plan.
 
 ## Mode selection guidance
 
