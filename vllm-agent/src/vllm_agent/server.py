@@ -4,7 +4,7 @@ from __future__ import annotations
 import os
 from dataclasses import asdict
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException
 from pydantic import BaseModel
 
 from .api import (
@@ -13,6 +13,18 @@ from .api import (
     agent_session_step, agent_session_status, agent_session_stop,
 )
 from .skills import SkillLoader
+
+VLLM_AGENT_API_KEY = os.environ.get("VLLM_AGENT_API_KEY", "")
+
+
+async def require_key(authorization: str | None = Header(None)) -> None:
+    """When VLLM_AGENT_API_KEY is set, require `Authorization: Bearer <key>`."""
+    if not VLLM_AGENT_API_KEY:
+        return
+    expected = f"Bearer {VLLM_AGENT_API_KEY}"
+    if authorization != expected:
+        raise HTTPException(401, "invalid or missing API key")
+
 
 app = FastAPI(title="vllm-agent")
 
@@ -53,19 +65,19 @@ async def health() -> dict:
     }
 
 
-@app.post("/run")
+@app.post("/run", dependencies=[Depends(require_key)])
 async def run(body: RunBody) -> dict:
     result = await agent_run(AgentRunRequest(**body.model_dump()))
     return asdict(result)
 
 
-@app.post("/session")
+@app.post("/session", dependencies=[Depends(require_key)])
 async def session_start(body: SessionStartBody) -> dict:
     result = await agent_session_start(AgentSessionStartRequest(**body.model_dump()))
     return asdict(result)
 
 
-@app.post("/session/{session_id}/step")
+@app.post("/session/{session_id}/step", dependencies=[Depends(require_key)])
 async def session_step(session_id: str, body: SessionStepBody) -> dict:
     try:
         result = await agent_session_step(
@@ -75,7 +87,7 @@ async def session_step(session_id: str, body: SessionStepBody) -> dict:
     return asdict(result)
 
 
-@app.get("/session/{session_id}")
+@app.get("/session/{session_id}", dependencies=[Depends(require_key)])
 async def session_status(session_id: str) -> dict:
     try:
         return asdict(await agent_session_status(session_id))
@@ -83,7 +95,7 @@ async def session_status(session_id: str) -> dict:
         raise HTTPException(404, f"unknown session: {session_id}")
 
 
-@app.post("/session/{session_id}/stop")
+@app.post("/session/{session_id}/stop", dependencies=[Depends(require_key)])
 async def session_stop(session_id: str) -> dict:
     try:
         result = await agent_session_stop(session_id)
@@ -92,6 +104,6 @@ async def session_stop(session_id: str) -> dict:
     return asdict(result)
 
 
-@app.get("/skills")
+@app.get("/skills", dependencies=[Depends(require_key)])
 async def skills() -> list[dict]:
     return SkillLoader().list_skills()

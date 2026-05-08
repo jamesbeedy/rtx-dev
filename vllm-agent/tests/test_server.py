@@ -95,3 +95,39 @@ def test_session_status_404(client, tmp_path, monkeypatch):
     monkeypatch.setenv("VLLM_AGENT_SESSION_ROOT", str(tmp_path / "sessions"))
     r = client.get("/session/does-not-exist")
     assert r.status_code == 404
+
+
+def test_run_401_when_key_set_and_missing(client, tmp_path, monkeypatch):
+    """When VLLM_AGENT_API_KEY is set, /run requires Bearer header."""
+    monkeypatch.setenv("VLLM_AGENT_API_KEY", "sekret")
+    import importlib
+    import vllm_agent.server as srv
+    importlib.reload(srv)
+    from fastapi.testclient import TestClient
+    c = TestClient(srv.app)
+    r = c.post("/run", json={"task": "x", "workdir": str(tmp_path)})
+    assert r.status_code == 401
+
+
+def test_run_401_when_key_wrong(tmp_path, monkeypatch):
+    monkeypatch.setenv("VLLM_AGENT_API_KEY", "sekret")
+    import importlib
+    import vllm_agent.server as srv
+    importlib.reload(srv)
+    from fastapi.testclient import TestClient
+    c = TestClient(srv.app)
+    r = c.post("/run", json={"task": "x", "workdir": str(tmp_path)},
+               headers={"Authorization": "Bearer wrong"})
+    assert r.status_code == 401
+
+
+def test_health_open_even_when_key_set(monkeypatch):
+    """`/health` is intentionally unauthenticated so probes can reach it."""
+    monkeypatch.setenv("VLLM_AGENT_API_KEY", "sekret")
+    import importlib
+    import vllm_agent.server as srv
+    importlib.reload(srv)
+    from fastapi.testclient import TestClient
+    c = TestClient(srv.app)
+    r = c.get("/health")
+    assert r.status_code == 200
