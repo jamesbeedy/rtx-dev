@@ -67,8 +67,11 @@ async def session_start(body: SessionStartBody) -> dict:
 
 @app.post("/session/{session_id}/step")
 async def session_step(session_id: str, body: SessionStepBody) -> dict:
-    result = await agent_session_step(
-        session_id, nudge=body.nudge, max_iterations=body.max_iterations)
+    try:
+        result = await agent_session_step(
+            session_id, nudge=body.nudge, max_iterations=body.max_iterations)
+    except KeyError:
+        raise HTTPException(404, f"unknown session: {session_id}")
     return asdict(result)
 
 
@@ -82,7 +85,11 @@ async def session_status(session_id: str) -> dict:
 
 @app.post("/session/{session_id}/stop")
 async def session_stop(session_id: str) -> dict:
-    return asdict(await agent_session_stop(session_id))
+    try:
+        result = await agent_session_stop(session_id)
+    except KeyError:
+        raise HTTPException(404, f"unknown session: {session_id}")
+    return asdict(result)
 
 
 @app.get("/skills")

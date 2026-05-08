@@ -85,6 +85,7 @@ async def test_agent_session_start_step_status_stop(tmp_path, monkeypatch):
 
     step = await agent_session_step(s.session_id, nudge=None, max_iterations=3)
     assert step.status == "completed"
+    assert step.step_status == "ok"
     assert step.iterations_this_step == 1
 
     status = await agent_session_status(s.session_id)
@@ -158,3 +159,26 @@ async def test_agent_run_populates_search_log(tmp_path, monkeypatch):
     assert result.status == "ok"
     assert len(result.search_log) == 1
     assert result.search_log[0]["query"] == "test query"
+
+
+@respx.mock
+async def test_agent_session_step_returns_step_status(tmp_path, monkeypatch):
+    """agent_session_step returns BOTH lifecycle status and per-step run status."""
+    respx.post("https://vllm.example/v1/chat/completions").mock(
+        return_value=Response(200, json={
+            "choices": [{"message": {"content": "done", "tool_calls": []}}]
+        })
+    )
+    monkeypatch.setenv("VLLM_BASE_URL", "https://vllm.example")
+    monkeypatch.setenv("VLLM_MODEL", "qwen3-coder")
+    monkeypatch.setenv("VLLM_AGENT_SESSION_ROOT", str(tmp_path / "sessions"))
+
+    from vllm_agent.api import (
+        agent_session_start, agent_session_step,
+        AgentSessionStartRequest,
+    )
+    s = await agent_session_start(AgentSessionStartRequest(
+        goal="g", workdir=str(tmp_path)))
+    step = await agent_session_step(s.session_id, max_iterations=2)
+    assert step.status == "completed"
+    assert step.step_status == "ok"

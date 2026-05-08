@@ -43,3 +43,16 @@ def test_skills_endpoint(client):
     r = client.get("/skills")
     assert r.status_code == 200
     assert isinstance(r.json(), list)
+
+
+def test_session_step_404_for_unknown(client, tmp_path, monkeypatch):
+    monkeypatch.setenv("VLLM_AGENT_SESSION_ROOT", str(tmp_path / "sessions"))
+    r = client.post("/session/does-not-exist/step", json={"max_iterations": 1})
+    assert r.status_code == 404
+    assert "does-not-exist" in r.json().get("detail", "")
+
+
+def test_session_stop_404_for_unknown(client, tmp_path, monkeypatch):
+    monkeypatch.setenv("VLLM_AGENT_SESSION_ROOT", str(tmp_path / "sessions"))
+    r = client.post("/session/does-not-exist/stop")
+    assert r.status_code == 404

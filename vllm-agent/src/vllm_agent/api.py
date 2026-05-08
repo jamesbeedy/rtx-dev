@@ -229,6 +229,7 @@ class AgentSessionStepResult:
     files_changed_this_step: list[str]
     summary_path: str
     status: str
+    step_status: str
 
 
 async def agent_session_step(
@@ -244,6 +245,7 @@ async def agent_session_step(
             files_changed_this_step=[],
             summary_path=str(store._dir(session_id) / "summary.md"),
             status=s.status.value,
+            step_status="not_started",
         )
 
     ws = Workspace.resolve(s.workdir)
@@ -306,6 +308,7 @@ async def agent_session_step(
         files_changed_this_step=files_changed,
         summary_path=str(sess_dir / "summary.md"),
         status=store.load(session_id).status.value,
+        step_status=loop_result.status,
     )
 
 
