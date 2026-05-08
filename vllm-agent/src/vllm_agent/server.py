@@ -32,6 +32,7 @@ app = FastAPI(title="vllm-agent")
 class RunBody(BaseModel):
     task: str
     skill: str | None = None
+    skill_content: str | None = None
     mode: str = "remote"
     workdir: str | None = None
     out_dir: str | None = None
@@ -46,6 +47,7 @@ class RunBody(BaseModel):
 class SessionStartBody(BaseModel):
     goal: str
     skill: str | None = None
+    skill_content: str | None = None
     mode: str = "remote"
     workdir: str | None = None
     model: str | None = None

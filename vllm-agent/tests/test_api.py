@@ -250,3 +250,33 @@ async def test_agent_run_no_diff_when_not_git(tmp_path, monkeypatch):
     result = await agent_run(req)
     assert result.status == "ok"
     assert result.diff_path is None
+
+
+@respx.mock
+async def test_agent_run_uses_skill_content_when_provided(tmp_path, monkeypatch):
+    """If skill_content is set in the request, the worker prompt includes it
+    and SkillLoader is NOT consulted (we use a fake skill name to verify)."""
+    captured: dict = {}
+
+    def _capture(request):
+        captured["body"] = json.loads(request.content)
+        return Response(200, json={"choices": [{"message": {"content": "ok"}}]})
+
+    respx.post("https://vllm.example/v1/chat/completions").mock(side_effect=_capture)
+    monkeypatch.setenv("VLLM_BASE_URL", "https://vllm.example")
+    monkeypatch.setenv("VLLM_MODEL", "qwen3-coder")
+
+    req = AgentRunRequest(
+        task="anything",
+        skill="ignored:does-not-exist",
+        skill_content="--- PROVIDED SKILL CONTENT ---",
+        mode="remote",
+        workdir=str(tmp_path),
+        out_dir=str(tmp_path / "out"),
+        max_iterations=1,
+        max_tokens=64,
+    )
+    result = await agent_run(req)
+    assert result.status == "ok"
+    sys_msg = next(m for m in captured["body"]["messages"] if m["role"] == "system")
+    assert "PROVIDED SKILL CONTENT" in sys_msg["content"]

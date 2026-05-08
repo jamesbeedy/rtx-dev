@@ -193,3 +193,31 @@ def test_artifacts_401_when_key_set_and_missing(tmp_path, monkeypatch):
     c = TestClient(srv.app)
     r = c.get(f"/artifacts?out_dir={out}")
     assert r.status_code == 401
+
+
+@respx.mock
+def test_run_endpoint_accepts_skill_content(client, tmp_path, monkeypatch):
+    """POST /run with skill_content threads it into the worker's system prompt."""
+    monkeypatch.setenv("VLLM_BASE_URL", "https://vllm.example")
+    monkeypatch.setenv("VLLM_MODEL", "qwen3-coder")
+    captured: dict = {}
+
+    def _capture(request):
+        captured["body"] = json.loads(request.content)
+        return Response(200, json={"choices": [{"message": {"content": "ok"}}]})
+
+    respx.post("https://vllm.example/v1/chat/completions").mock(side_effect=_capture)
+
+    r = client.post("/run", json={
+        "task": "x",
+        "skill": "fake:skill",
+        "skill_content": "--- INJECTED FROM HTTP BODY ---",
+        "mode": "remote",
+        "workdir": str(tmp_path),
+        "out_dir": str(tmp_path / "out"),
+        "max_iterations": 1,
+        "max_tokens": 64,
+    })
+    assert r.status_code == 200
+    sys_msg = next(m for m in captured["body"]["messages"] if m["role"] == "system")
+    assert "INJECTED FROM HTTP BODY" in sys_msg["content"]

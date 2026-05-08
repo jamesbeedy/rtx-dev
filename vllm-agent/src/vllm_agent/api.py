@@ -30,6 +30,7 @@ DEFAULT_RUN_ROOT = Path("~/.cache/vllm-agent/runs").expanduser()
 class AgentRunRequest:
     task: str
     skill: str | None = None
+    skill_content: str | None = None
     mode: str = "remote"
     workdir: str | None = None
     out_dir: str | None = None
@@ -127,7 +128,12 @@ async def agent_run(req: AgentRunRequest) -> AgentRunResult:
 
     ws = Workspace.resolve(req.workdir)
     transcript = Transcript(out_dir / "transcript.jsonl")
-    skill_content = SkillLoader().load_skill(req.skill) if req.skill else None
+    if req.skill_content:
+        skill_content = req.skill_content
+    elif req.skill:
+        skill_content = SkillLoader().load_skill(req.skill)
+    else:
+        skill_content = None
     system_prompt = build_system_prompt(skill_content, str(ws.root), req.mode)
     user_prompt = build_user_prompt(req.task, req.extra_context)
 
@@ -218,6 +224,7 @@ def _session_store() -> SessionStore:
 class AgentSessionStartRequest:
     goal: str
     skill: str | None = None
+    skill_content: str | None = None
     mode: str = "remote"
     workdir: str | None = None
     model: str | None = None
@@ -233,8 +240,14 @@ class AgentSessionStartResult:
 async def agent_session_start(req: AgentSessionStartRequest) -> AgentSessionStartResult:
     ws = Workspace.resolve(req.workdir)
     store = _session_store()
-    s = store.create(goal=req.goal, skill=req.skill, mode=req.mode,
-                     workdir=str(ws.root), model=req.model)
+    s = store.create(
+        goal=req.goal,
+        skill=req.skill,
+        skill_content=req.skill_content,
+        mode=req.mode,
+        workdir=str(ws.root),
+        model=req.model,
+    )
     return AgentSessionStartResult(
         session_id=s.session_id,
         out_dir=str(store.session_dir(s.session_id)),
@@ -272,7 +285,12 @@ async def agent_session_step(
     sess_dir = store.session_dir(session_id)
     transcript = Transcript(sess_dir / "transcript.jsonl")
 
-    skill_content = SkillLoader().load_skill(s.skill) if s.skill else None
+    if s.skill_content:
+        skill_content = s.skill_content
+    elif s.skill:
+        skill_content = SkillLoader().load_skill(s.skill)
+    else:
+        skill_content = None
     system_prompt = build_system_prompt(skill_content, str(ws.root), s.mode)
     user_prompt = build_user_prompt(s.goal, None)
 

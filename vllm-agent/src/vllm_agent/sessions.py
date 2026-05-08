@@ -22,6 +22,7 @@ class Session:
     session_id: str
     goal: str
     skill: str | None
+    skill_content: str | None
     mode: str
     workdir: str
     model: str | None
@@ -47,14 +48,30 @@ class SessionStore:
         """Public alias for the session's on-disk directory."""
         return self._dir(session_id)
 
-    def create(self, goal: str, skill: str | None, mode: str,
-               workdir: str, model: str | None) -> Session:
+    def create(
+        self,
+        *,
+        goal: str,
+        skill: str | None,
+        skill_content: str | None,
+        mode: str,
+        workdir: str,
+        model: str | None,
+    ) -> Session:
         sid = uuid.uuid4().hex[:12]
         now = time.time()
-        s = Session(session_id=sid, goal=goal, skill=skill, mode=mode,
-                    workdir=workdir, model=model,
-                    status=SessionStatus.RUNNING,
-                    started_at=now, last_activity_at=now)
+        s = Session(
+            session_id=sid,
+            goal=goal,
+            skill=skill,
+            skill_content=skill_content,
+            mode=mode,
+            workdir=workdir,
+            model=model,
+            status=SessionStatus.RUNNING,
+            started_at=now,
+            last_activity_at=now,
+        )
         d = self._dir(sid)
         d.mkdir(parents=True, exist_ok=True)
         self._write_meta(s)
