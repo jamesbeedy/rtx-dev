@@ -53,3 +53,42 @@ async def test_agent_run_writes_summary(tmp_path, monkeypatch):
     assert (out_dir / "transcript.jsonl").exists()
     assert "hi" in (tmp_path / "out.txt").read_text()
     assert "out.txt" in (out_dir / "files_changed.txt").read_text()
+
+
+import json as _json
+
+
+@respx.mock
+async def test_agent_session_start_step_status_stop(tmp_path, monkeypatch):
+    """Multi-step session: start, run one step that calls finish, then stop."""
+    seq = [
+        _resp(tool_calls=[{
+            "id": "c", "type": "function",
+            "function": {"name": "finish",
+                         "arguments": _json.dumps({"summary": "one-step done"})},
+        }]),
+    ]
+    counter = {"i": 0}
+    def _next(_req):
+        i = counter["i"]; counter["i"] += 1
+        return Response(200, json=seq[i])
+    respx.post("https://vllm.example/v1/chat/completions").mock(side_effect=_next)
+
+    monkeypatch.setenv("VLLM_BASE_URL", "https://vllm.example")
+    monkeypatch.setenv("VLLM_MODEL", "qwen3-coder")
+    monkeypatch.setenv("VLLM_AGENT_SESSION_ROOT", str(tmp_path / "sessions"))
+
+    from vllm_agent.api import agent_session_start, agent_session_step, agent_session_status, agent_session_stop, AgentSessionStartRequest
+    s = await agent_session_start(AgentSessionStartRequest(
+        goal="do a thing", skill=None, mode="remote", workdir=str(tmp_path)))
+    assert s.status == "running"
+
+    step = await agent_session_step(s.session_id, nudge=None, max_iterations=3)
+    assert step.status == "ok"
+    assert step.iterations_this_step == 1
+
+    status = await agent_session_status(s.session_id)
+    assert status.iterations_total == 1
+
+    stopped = await agent_session_stop(s.session_id)
+    assert stopped.status == "stopped"

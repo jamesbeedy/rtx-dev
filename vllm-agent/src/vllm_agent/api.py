@@ -137,3 +137,166 @@ async def agent_run(req: AgentRunRequest) -> AgentRunResult:
         status=loop_result.status,
         error=loop_result.error,
     )
+
+
+# ---- session API ------------------------------------------------------------
+
+from .sessions import SessionStore, SessionStatus
+
+DEFAULT_SESSION_ROOT = Path("~/.cache/vllm-agent/sessions").expanduser()
+
+
+def _session_store() -> SessionStore:
+    root = Path(os.environ.get("VLLM_AGENT_SESSION_ROOT", str(DEFAULT_SESSION_ROOT)))
+    return SessionStore(root=root)
+
+
+@dataclass
+class AgentSessionStartRequest:
+    goal: str
+    skill: str | None = None
+    mode: str = "remote"
+    workdir: str | None = None
+    model: str | None = None
+
+
+@dataclass
+class AgentSessionStartResult:
+    session_id: str
+    out_dir: str
+    status: str
+
+
+async def agent_session_start(req: AgentSessionStartRequest) -> AgentSessionStartResult:
+    ws = Workspace.resolve(req.workdir)
+    store = _session_store()
+    s = store.create(goal=req.goal, skill=req.skill, mode=req.mode,
+                     workdir=str(ws.root), model=req.model)
+    return AgentSessionStartResult(
+        session_id=s.session_id,
+        out_dir=str(store._dir(s.session_id)),
+        status=s.status.value,
+    )
+
+
+@dataclass
+class AgentSessionStepResult:
+    session_id: str
+    iterations_this_step: int
+    files_changed_this_step: list[str]
+    summary_path: str
+    status: str
+
+
+async def agent_session_step(
+    session_id: str,
+    nudge: str | None = None,
+    max_iterations: int = 10,
+) -> AgentSessionStepResult:
+    store = _session_store()
+    s = store.load(session_id)
+    if s.status in (SessionStatus.STOPPED, SessionStatus.COMPLETED, SessionStatus.ERRORED):
+        return AgentSessionStepResult(
+            session_id=session_id, iterations_this_step=0,
+            files_changed_this_step=[],
+            summary_path=str(store._dir(session_id) / "summary.md"),
+            status=s.status.value,
+        )
+
+    ws = Workspace.resolve(s.workdir)
+    sess_dir = store._dir(session_id)
+    transcript = Transcript(sess_dir / "transcript.jsonl")
+
+    skill_content = SkillLoader().load_skill(s.skill) if s.skill else None
+    system_prompt = build_system_prompt(skill_content, str(ws.root), s.mode)
+    user_prompt = build_user_prompt(s.goal, None)
+
+    msgs = store.load_messages(session_id)
+    if not msgs:
+        msgs = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ]
+        for m in msgs:
+            store.append_message(session_id, m)
+    if nudge:
+        msgs.append({"role": "user", "content": nudge})
+        store.append_message(session_id, {"role": "user", "content": nudge})
+
+    ctx = ToolContext(
+        workspace=ws,
+        transcript=transcript,
+        env={
+            "VLLM_AGENT_MODE": s.mode,
+            "VLLM_AGENT_LOCAL_BASH": os.environ.get("VLLM_AGENT_LOCAL_BASH", ""),
+            "VLLM_AGENT_OUT_DIR": str(sess_dir),
+        },
+    )
+    cfg = LoopConfig(
+        vllm_base_url=os.environ.get("VLLM_BASE_URL", "http://127.0.0.1:8000"),
+        vllm_model=s.model or os.environ.get("VLLM_MODEL", ""),
+        max_iterations=max_iterations,
+        max_tokens=4096,
+        temperature=0.2,
+        api_key=os.environ.get("VLLM_API_KEY") or None,
+    )
+
+    before = _snapshot_files(ws.root)
+    loop_result = await run_loop(msgs, ctx, cfg)
+    files_changed = _files_changed(before, ws.root)
+
+    # Persist new messages produced this step.
+    new_msgs = loop_result.messages[len(msgs):]
+    for m in new_msgs:
+        store.append_message(session_id, m)
+    store.add_files_changed(session_id, files_changed)
+    store.bump_iterations(session_id, loop_result.iterations)
+    if loop_result.status == "ok":
+        store.set_status(session_id, SessionStatus.COMPLETED)
+    elif loop_result.status == "error":
+        store.set_status(session_id, SessionStatus.ERRORED)
+
+    return AgentSessionStepResult(
+        session_id=session_id,
+        iterations_this_step=loop_result.iterations,
+        files_changed_this_step=files_changed,
+        summary_path=str(sess_dir / "summary.md"),
+        status=loop_result.status,
+    )
+
+
+@dataclass
+class AgentSessionStatusResult:
+    session_id: str
+    status: str
+    iterations_total: int
+    files_changed_total: list[str]
+    started_at: float
+    last_activity_at: float
+    out_dir: str
+
+
+async def agent_session_status(session_id: str) -> AgentSessionStatusResult:
+    store = _session_store()
+    s = store.load(session_id)
+    return AgentSessionStatusResult(
+        session_id=session_id,
+        status=s.status.value,
+        iterations_total=s.iterations_total,
+        files_changed_total=s.files_changed_total,
+        started_at=s.started_at,
+        last_activity_at=s.last_activity_at,
+        out_dir=str(store._dir(session_id)),
+    )
+
+
+@dataclass
+class AgentSessionStopResult:
+    session_id: str
+    status: str
+
+
+async def agent_session_stop(session_id: str) -> AgentSessionStopResult:
+    store = _session_store()
+    store.set_status(session_id, SessionStatus.STOPPED)
+    return AgentSessionStopResult(session_id=session_id, status="stopped")
