@@ -126,13 +126,13 @@ agent_run(
     skill: str | None = None,   # e.g. "superpowers:test-driven-development"
     mode: "local" | "remote" = "remote",
     workdir: str | None = None, # default: CWD (local) or repo root (remote)
-    out_dir: str | None = None, # where summary/artifacts/transcript get written
+    out_dir: str | None = None, # default: ~/.cache/vllm-agent/runs/<run_id>/
     model: str | None = None,
     max_iterations: int = 30,   # tool-call loop cap
     max_tokens: int = 4096,     # per vLLM call
     temperature: float = 0.2,
     timeout_s: int = 1800,      # 30 min default
-    extra_context: list[str] | None = None,
+    extra_context: list[str] | None = None,  # list of file paths to inline into the worker's prompt
 ) -> {
     "run_id": str,
     "out_dir": str,             # transcript.jsonl, summary.md, files_changed.txt
