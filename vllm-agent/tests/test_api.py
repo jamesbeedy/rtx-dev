@@ -118,3 +118,43 @@ async def test_agent_run_emits_timeout_status(tmp_path, monkeypatch):
     result = await agent_run(req)
     assert result.status == "timeout"
     assert result.error and "timeout" in result.error.lower()
+
+
+@respx.mock
+async def test_agent_run_populates_search_log(tmp_path, monkeypatch):
+    """If the worker calls web_search during a run, search_log lists the queries."""
+    seq = [
+        _resp(tool_calls=[{
+            "id": "c1", "type": "function",
+            "function": {"name": "web_search",
+                         "arguments": json.dumps({"query": "test query"})},
+        }]),
+        _resp(tool_calls=[{
+            "id": "c2", "type": "function",
+            "function": {"name": "finish",
+                         "arguments": json.dumps({"summary": "did a search"})},
+        }]),
+    ]
+    counter = {"i": 0}
+    def _next(_req):
+        i = counter["i"]; counter["i"] += 1
+        return Response(200, json=seq[i])
+    respx.post("https://vllm.example/v1/chat/completions").mock(side_effect=_next)
+
+    respx.post("https://html.duckduckgo.com/html/").mock(
+        return_value=Response(200, text="<html></html>"))
+
+    monkeypatch.setenv("VLLM_BASE_URL", "https://vllm.example")
+    monkeypatch.setenv("VLLM_MODEL", "qwen3-coder")
+
+    req = AgentRunRequest(
+        task="search for something",
+        mode="remote",
+        workdir=str(tmp_path),
+        out_dir=str(tmp_path / "out"),
+        max_iterations=3,
+    )
+    result = await agent_run(req)
+    assert result.status == "ok"
+    assert len(result.search_log) == 1
+    assert result.search_log[0]["query"] == "test query"

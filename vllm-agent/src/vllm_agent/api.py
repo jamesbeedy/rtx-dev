@@ -4,7 +4,8 @@ from __future__ import annotations
 import os
 import time
 import uuid
-from dataclasses import dataclass
+import json
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -51,6 +52,7 @@ class AgentRunResult:
     duration_s: float
     status: str
     error: str | None = None
+    search_log: list[dict] = field(default_factory=list)
 
 
 def _snapshot_files(workdir: Path) -> dict[str, float]:
@@ -75,6 +77,29 @@ def _files_changed(before: dict[str, float], workdir: Path) -> list[str]:
         if path not in after:
             changed.add(path)
     return sorted(str(Path(p).relative_to(workdir)) for p in changed)
+
+
+def _extract_search_log(transcript_path: Path) -> list[dict]:
+    """Pull web_search records out of the transcript JSONL."""
+    if not transcript_path.exists():
+        return []
+    out: list[dict] = []
+    for line in transcript_path.read_text().splitlines():
+        if not line.strip():
+            continue
+        try:
+            rec = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if rec.get("kind") == "tool_call" and rec.get("tool") == "web_search":
+            args = rec.get("args") or {}
+            result = rec.get("result") or {}
+            out.append({
+                "query": args.get("query", ""),
+                "n_results": len(result.get("results", []) or []),
+                "error": result.get("error"),
+            })
+    return out
 
 
 async def agent_run(req: AgentRunRequest) -> AgentRunResult:
@@ -132,6 +157,7 @@ async def agent_run(req: AgentRunRequest) -> AgentRunResult:
             files_changed=files_changed, diff_path=None,
             iterations=0, duration_s=round(duration, 2),
             status="timeout", error=f"agent_run exceeded timeout_s={req.timeout_s}",
+            search_log=_extract_search_log(out_dir / "transcript.jsonl"),
         )
     duration = time.perf_counter() - t0
 
@@ -154,6 +180,7 @@ async def agent_run(req: AgentRunRequest) -> AgentRunResult:
         duration_s=round(duration, 2),
         status=loop_result.status,
         error=loop_result.error,
+        search_log=_extract_search_log(out_dir / "transcript.jsonl"),
     )
 
 
