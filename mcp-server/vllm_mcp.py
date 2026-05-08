@@ -53,6 +53,7 @@ import sys
 import time
 import tomllib
 from pathlib import Path
+from dataclasses import asdict
 from typing import Any
 
 import httpx
@@ -876,7 +877,6 @@ async def agent_run(
         temperature=temperature, timeout_s=timeout_s, extra_context=extra_context,
     )
     if mode == "local":
-        from dataclasses import asdict
         result = await _agent_run_local(req)
         return asdict(result)
     else:
@@ -893,7 +893,6 @@ async def agent_session_start(
 ) -> dict[str, Any]:
     """Start a long-running agent session. Returns: {session_id, out_dir, status}."""
     if mode == "local":
-        from dataclasses import asdict
         req = _AgentSessionStartRequest(goal=goal, skill=skill, mode=mode,
                                         workdir=workdir, model=model)
         return asdict(await _ass_local(req))
@@ -912,7 +911,6 @@ async def agent_session_step(
 ) -> dict[str, Any]:
     """Run one step of a session. Returns step metadata including step_status."""
     if mode == "local":
-        from dataclasses import asdict
         return asdict(await _aststep_local(session_id, nudge=nudge,
                                             max_iterations=max_iterations))
     return await _http_session_step(session_id, {
@@ -924,7 +922,6 @@ async def agent_session_step(
 async def agent_session_status(session_id: str, mode: str = "remote") -> dict[str, Any]:
     """Get the current state of a session."""
     if mode == "local":
-        from dataclasses import asdict
         return asdict(await _aststatus_local(session_id))
     return await _http_session_status(session_id)
 
@@ -933,7 +930,6 @@ async def agent_session_status(session_id: str, mode: str = "remote") -> dict[st
 async def agent_session_stop(session_id: str, mode: str = "remote") -> dict[str, Any]:
     """Stop a session. Subsequent steps return immediately with status=stopped."""
     if mode == "local":
-        from dataclasses import asdict
         return asdict(await _aststop_local(session_id))
     return await _http_session_stop(session_id)
 
