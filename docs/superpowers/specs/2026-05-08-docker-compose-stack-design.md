@@ -79,14 +79,19 @@ everything else lives in the compose internal network.
 ### `vllm-agent`
 
 - **Image:** `python:3.12-slim`
+- **User:** `"1000:1000"` (the host's `ubuntu` user) — so files written into
+  bind mounts (e.g. `.egg-info` from `pip install -e`) appear as ubuntu on
+  the host, not root.
 - **Volumes:**
-  - `/home/ubuntu/rtx_5090_dev/vllm-agent:/app:ro` — source tree, read-only
+  - `/home/ubuntu/rtx_5090_dev/vllm-agent:/app` — source tree, read-write.
+    Read-write (not `:ro`) because `pip install -e .` writes `.egg-info`.
   - `/home/ubuntu/.claude:/skills:ro` — user's skill roots for `list_skills`
   - `vllm-agent-sessions:/var/lib/vllm-agent/sessions`
-  - `vllm-agent-runs:/root/.cache/vllm-agent/runs`
+  - `vllm-agent-runs:/home/agent/.cache/vllm-agent/runs`
 - **Ports:** none
-- **Command:** `bash -c "pip install --quiet -e /app && vllm-agent serve
-  --host 0.0.0.0 --port 8088"`
+- **Command:** `bash -c "pip install --quiet --user -e /app && vllm-agent serve
+  --host 0.0.0.0 --port 8088"`. The `--user` flag installs into
+  `~/.local` (no system-site-packages writes; works fine as uid 1000).
 - **Environment:**
   - `VLLM_BASE_URL=http://vllm:8000` (service-name DNS)
   - `VLLM_MODEL=${VLLM_MODEL}`
@@ -370,10 +375,13 @@ the lxc-file-push install dance.
   toolkit version if needed.
 - **First model load is still ~10–20 min** (HF download + warmup), same as
   the systemd path. Not a regression.
-- **vllm-agent install on first start** runs `pip install -e /app` inside
-  the container; takes ~15-30s. The container's restart policy will cause
-  this to re-run on every restart — acceptable. If it becomes annoying,
-  bake a `.venv` into a custom image (out of scope).
+- **vllm-agent install on first start** runs `pip install --user -e /app`
+  inside the container; takes ~15-30s. The container's restart policy will
+  cause this to re-run on every restart — acceptable. The `--user` flag
+  + `user: "1000:1000"` ensures pip writes only to `~/.local` (no root
+  perms needed). The bind-mounted source gets a `.egg-info` dir owned by
+  ubuntu on the host. If this becomes annoying, bake a `.venv` into a
+  custom image (out of scope).
 - **Bind-mount path is host-absolute.** `/home/ubuntu/rtx_5090_dev` must
   exist with the correct contents before `docker compose up`. The launch
   script's lxc-file-push step ensures this.
