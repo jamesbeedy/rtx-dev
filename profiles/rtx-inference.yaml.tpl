@@ -31,7 +31,11 @@ config:
           docker-buildx-plugin docker-compose-plugin
 
       # ---- 2. NVIDIA open kernel module + container toolkit ------------
-      - DEBIAN_FRONTEND=noninteractive apt-get install -y -qq nvidia-open
+      #      ubuntu-drivers autoinstall picks the right server-open driver and
+      #      includes nvidia-utils (nvidia-smi).  --gpgpu would install the
+      #      headless variant only and skip nvidia-smi.
+      - DEBIAN_FRONTEND=noninteractive apt-get install -y -qq ubuntu-drivers-common
+      - DEBIAN_FRONTEND=noninteractive ubuntu-drivers autoinstall
       - curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey
           | gpg --dearmor -o /etc/apt/keyrings/nvidia-container-toolkit.gpg
       - |
