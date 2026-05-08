@@ -240,8 +240,8 @@ ENV_EOF
 chown ubuntu:ubuntu /home/ubuntu/rtx_5090_dev/.env
 chmod 600 /home/ubuntu/rtx_5090_dev/.env'"
 
-log "Pulling images (vllm/vllm-openai:latest, python:3.12-slim, nginx:alpine)..."
-remote "lxc exec $VM_NAME -- su - ubuntu -c 'cd ~/rtx_5090_dev && docker compose pull'"
+log "Pulling images (vllm/vllm-openai:latest, nginx:alpine) and building vllm-agent..."
+remote "lxc exec $VM_NAME -- su - ubuntu -c 'cd ~/rtx_5090_dev && docker compose pull --ignore-buildable && docker compose build vllm-agent'"
 log "Starting compose stack (docker compose up -d)..."
 remote "lxc exec $VM_NAME -- su - ubuntu -c 'cd ~/rtx_5090_dev && docker compose up -d'"
 

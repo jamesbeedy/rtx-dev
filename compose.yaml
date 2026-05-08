@@ -22,30 +22,26 @@ services:
       test: ["CMD", "curl", "-f", "http://localhost:8000/v1/models"]
       interval: 30s
       timeout: 5s
-      retries: 30
-      start_period: 600s
+      retries: 60
+      start_period: 1800s
 
   vllm-agent:
-    image: python:3.12-slim
+    build: ./compose/vllm-agent
     restart: unless-stopped
-    user: "1000:1000"
     depends_on:
       vllm:
         condition: service_healthy
     volumes:
       - /home/ubuntu/rtx_5090_dev/vllm-agent:/app
-      - /home/ubuntu/.claude:/skills:ro
       - vllm-agent-sessions:/var/lib/vllm-agent/sessions
       - vllm-agent-runs:/home/agent/.cache/vllm-agent/runs
     environment:
-      - HOME=/home/agent
       - VLLM_BASE_URL=http://vllm:8000
       - VLLM_MODEL=${VLLM_MODEL}
       - VLLM_API_KEY=${VLLM_API_KEY}
       - VLLM_AGENT_API_KEY=${VLLM_AGENT_API_KEY}
       - DDG_MIN_INTERVAL_S=${DDG_MIN_INTERVAL_S}
       - VLLM_AGENT_SESSION_ROOT=/var/lib/vllm-agent/sessions
-      - PATH=/home/agent/.local/bin:/usr/local/bin:/usr/bin:/bin
     command: >
       bash -c "
       mkdir -p /home/agent/.cache/vllm-agent/runs &&
