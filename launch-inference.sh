@@ -228,8 +228,31 @@ if ! remote "lxc exec $VM_NAME -- curl -s --max-time 3 http://127.0.0.1:$PORT/v1
   die "vLLM did not start in the expected window. Inspect with: ssh $LXD_HOST -- lxc exec $VM_NAME -- journalctl -u vllm -f"
 fi
 
-# ---------- 14. Poll vllm-agent /health until ready ----------
-log "Polling vllm-agent /health (waits for systemd unit + uv install on first boot)..."
+# ---------- 14. Push local repo into VM and install vllm-agent ----------
+# (Avoids needing GitHub auth in the VM for private repos.)
+log "Packaging local repo and pushing into VM..."
+TARBALL="$(mktemp -t rtx_5090_dev.XXXXXX.tar.gz)"
+tar --exclude='./.git' --exclude='./.worktrees' \
+    --exclude='./vllm-agent/.venv' --exclude='./vllm-agent/.venv-agent' \
+    --exclude='./mcp-server/.venv' --exclude='./test_apps' \
+    --exclude='**/__pycache__' --exclude='**/*.egg-info' \
+    -C "$SCRIPT_DIR" -czf "$TARBALL" .
+
+# scp the tarball to the LXD host, then lxc-file-push it into the VM.
+scp -q "$TARBALL" "$LXD_HOST:/tmp/rtx_5090_dev.tar.gz"
+rm -f "$TARBALL"
+remote "lxc file push /tmp/rtx_5090_dev.tar.gz $VM_NAME/tmp/rtx_5090_dev.tar.gz"
+remote "rm /tmp/rtx_5090_dev.tar.gz"
+
+log "Extracting and installing vllm-agent in VM..."
+remote "lxc exec $VM_NAME -- bash -c 'set -e; mkdir -p /home/ubuntu/rtx_5090_dev && tar -xzf /tmp/rtx_5090_dev.tar.gz -C /home/ubuntu/rtx_5090_dev && chown -R ubuntu:ubuntu /home/ubuntu/rtx_5090_dev && rm /tmp/rtx_5090_dev.tar.gz'"
+remote "lxc exec $VM_NAME -- su - ubuntu -c 'cd /home/ubuntu/rtx_5090_dev/vllm-agent && python3 -m venv .venv-agent && .venv-agent/bin/pip install --quiet --upgrade pip && .venv-agent/bin/pip install --quiet -e .'"
+
+log "Starting vllm-agent.service..."
+remote "lxc exec $VM_NAME -- bash -c 'systemctl reset-failed vllm-agent.service 2>/dev/null || true; systemctl restart vllm-agent.service'"
+
+# ---------- 15. Poll vllm-agent /health until ready ----------
+log "Polling vllm-agent /health..."
 for i in $(seq 1 60); do
   if remote "lxc exec $VM_NAME -- curl -s --max-time 3 http://127.0.0.1:8088/health" 2>/dev/null | grep -q '"ok":true'; then
     log "vllm-agent ready after ${i}x5s"

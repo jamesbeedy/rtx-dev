@@ -65,8 +65,10 @@ config:
       - systemctl daemon-reload
       - systemctl enable vllm.service
 
-      # Install vllm-agent from the rtx_5090_dev repo
-      - su - ubuntu -c 'cd ~ && (test -d rtx_5090_dev || git clone https://github.com/vantagecompute/rtx-inference.git rtx_5090_dev) && cd rtx_5090_dev/vllm-agent && python3 -m venv .venv-agent && .venv-agent/bin/pip install --upgrade pip && .venv-agent/bin/pip install -e .'
+      # NOTE: vllm-agent is installed by launch-inference.sh post-VM-up via
+      # `lxc file push` of the local repo tarball (avoids needing GitHub auth
+      # in the VM for private repos). The systemd unit below is enabled but
+      # not started here — launch-inference.sh starts it after the install.
 
       # Install systemd unit for vllm-agent serve
       - |
@@ -94,7 +96,7 @@ config:
         WantedBy=multi-user.target
         EOF
       - systemctl daemon-reload
-      - systemctl enable --now vllm-agent.service
+      - systemctl enable vllm-agent.service
 
     power_state:
       mode: reboot
