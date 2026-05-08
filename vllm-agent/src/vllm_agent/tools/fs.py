@@ -47,3 +47,39 @@ read_file_tool = register(Tool(
     },
     execute=_read_file,
 ))
+
+
+# ---- write_file -------------------------------------------------------------
+
+async def _write_file(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
+    path_arg = args.get("path", "")
+    content = args.get("content", "")
+    full = ctx.workspace.resolve_path(path_arg)
+    full.parent.mkdir(parents=True, exist_ok=True)
+    full.write_text(content)
+    return {
+        "path": str(full),
+        "bytes_written": len(content.encode()),
+        "inside_workspace": ctx.workspace.is_inside(full),
+    }
+
+
+write_file_tool = register(Tool(
+    name="write_file",
+    schema={
+        "type": "function",
+        "function": {
+            "name": "write_file",
+            "description": "Write content to a file (creates parent dirs, overwrites).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"},
+                    "content": {"type": "string"},
+                },
+                "required": ["path", "content"],
+            },
+        },
+    },
+    execute=_write_file,
+))

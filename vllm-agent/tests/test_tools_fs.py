@@ -1,5 +1,5 @@
 import pytest
-from vllm_agent.tools.fs import read_file_tool
+from vllm_agent.tools.fs import read_file_tool, write_file_tool
 from vllm_agent.tools import ToolContext
 from vllm_agent.workspace import Workspace
 from vllm_agent.transcript import Transcript
@@ -30,3 +30,16 @@ async def test_read_file_offset_limit(tmp_path, ctx):
 async def test_read_file_missing(tmp_path, ctx):
     out = await read_file_tool.execute({"path": "nope.txt"}, ctx)
     assert "error" in out
+
+
+async def test_write_file_creates_file(tmp_path, ctx):
+    out = await write_file_tool.execute(
+        {"path": "new/sub/x.txt", "content": "hello"}, ctx)
+    assert (tmp_path / "new" / "sub" / "x.txt").read_text() == "hello"
+    assert out["bytes_written"] == 5
+
+
+async def test_write_file_overwrites(tmp_path, ctx):
+    (tmp_path / "x.txt").write_text("old")
+    await write_file_tool.execute({"path": "x.txt", "content": "new"}, ctx)
+    assert (tmp_path / "x.txt").read_text() == "new"
