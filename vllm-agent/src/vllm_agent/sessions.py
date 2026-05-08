@@ -22,13 +22,13 @@ class Session:
     session_id: str
     goal: str
     skill: str | None
-    skill_content: str | None
     mode: str
     workdir: str
     model: str | None
     status: SessionStatus
     started_at: float
     last_activity_at: float
+    skill_content: str | None = None
     iterations_total: int = 0
     files_changed_total: list[str] = field(default_factory=list)
 

@@ -68,3 +68,28 @@ def test_session_skill_content_defaults_to_none(tmp_path):
     )
     s2 = store.load(s.session_id)
     assert s2.skill_content is None
+
+
+def test_session_load_back_compat_missing_skill_content(tmp_path):
+    """Old session.json files written before Plan G must still load (skill_content defaults to None)."""
+    store = SessionStore(root=tmp_path)
+    sid = "abcd12345678"
+    session_dir = tmp_path / sid
+    session_dir.mkdir()
+    # Synthesize a pre-Plan-G session.json (no skill_content key)
+    (session_dir / "session.json").write_text(json.dumps({
+        "session_id": sid,
+        "goal": "old goal",
+        "skill": None,
+        "mode": "local",
+        "workdir": "/tmp",
+        "model": None,
+        "status": "running",
+        "started_at": 1700000000.0,
+        "last_activity_at": 1700000000.0,
+        "iterations_total": 0,
+        "files_changed_total": [],
+    }))
+    s = store.load(sid)
+    assert s.session_id == sid
+    assert s.skill_content is None
