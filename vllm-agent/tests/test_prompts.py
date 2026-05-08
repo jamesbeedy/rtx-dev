@@ -41,3 +41,12 @@ def test_budget_check_raises_when_too_large():
     with pytest.raises(PromptBudgetError):
         build_system_prompt(skill_content=huge, workdir="/tmp/x", mode="local",
                             budget_chars=50_000)
+
+
+def test_system_prompt_includes_verify_discipline():
+    out = build_system_prompt(skill_content=None, workdir="/tmp", mode="remote")
+    # Worker is told to verify before finish, with concrete commands.
+    assert "VERIFY" in out or "verify" in out.lower()
+    assert "node --check" in out or "py_compile" in out or "bash -n" in out
+    # Summary discipline: factual, not aspirational.
+    assert "FACTUAL" in out or "factual" in out.lower() or "actually" in out.lower()
