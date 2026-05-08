@@ -18,6 +18,7 @@ MAX_LEN="32768"
 GPU_UTIL="0.92"
 QUANTIZATION="awq_marlin --enable-auto-tool-choice --tool-call-parser qwen3_coder"
 API_KEY=""
+AGENT_API_KEY=""    # optional auth for vllm-agent serve (Bearer); default: no auth
 PORT="8000"
 TARGET=""           # auto-detect from hostname of LXD_HOST
 GPU_PCI=""          # auto-detect from lspci on LXD_HOST
@@ -46,6 +47,8 @@ Common options (defaults shown):
   --gpu-util $GPU_UTIL
   --quantization $QUANTIZATION
   --api-key SECRET            Enable Bearer auth on vLLM (default: no auth).
+  --agent-api-key SECRET      Enable Bearer auth on vllm-agent serve.
+                              (Default: no auth — only safe on a trusted LAN.)
   --port $PORT
   --target NODE               LXD cluster member name (default: \$(hostname) on lxd-host).
   --gpu-pci 0000:XX:00.0      Override autodetected GPU PCI address.
@@ -73,6 +76,7 @@ while [[ $# -gt 0 ]]; do
     --gpu-util)       GPU_UTIL="$2"; shift 2;;
     --quantization)   QUANTIZATION="$2"; shift 2;;
     --api-key)        API_KEY="$2"; shift 2;;
+    --agent-api-key)  AGENT_API_KEY="$2"; shift 2;;
     --port)           PORT="$2"; shift 2;;
     --target)         TARGET="$2"; shift 2;;
     --gpu-pci)        GPU_PCI="$2"; shift 2;;
@@ -141,6 +145,7 @@ sed \
   -e "s|__LIMITS_CPU__|$CPUS|g" \
   -e "s|__LIMITS_MEMORY__|$MEMORY|g" \
   -e "s|__DDG_MIN_INTERVAL__|$DDG_INTERVAL|g" \
+  -e "s|__VLLM_AGENT_API_KEY__|$AGENT_API_KEY|g" \
   "$TEMPLATE" >"$RENDERED"
 
 log "Rendered profile to $RENDERED ($(wc -l <"$RENDERED") lines)"
@@ -291,9 +296,9 @@ remote "lxc exec $VM_NAME -- curl -s $AUTH_HEADER http://127.0.0.1:$PORT/v1/chat
 MCP_JSON="$SCRIPT_DIR/.mcp.json"
 if [[ -f "$MCP_JSON" ]]; then
   log "Updating $MCP_JSON with VLLM_BASE_URL=http://${VM_IP}:${PORT}, VLLM_MODEL=$MODEL, DDG_MIN_INTERVAL_S=$DDG_INTERVAL..."
-  python3 - "$MCP_JSON" "http://${VM_IP}:${PORT}" "$MODEL" "$DDG_INTERVAL" "$API_KEY" "http://${VM_IP}:8088" <<'PYEOF'
+  python3 - "$MCP_JSON" "http://${VM_IP}:${PORT}" "$MODEL" "$DDG_INTERVAL" "$API_KEY" "http://${VM_IP}:8088" "$AGENT_API_KEY" <<'PYEOF'
 import json, sys
-path, base_url, model, ddg_interval, api_key, agent_url = sys.argv[1:7]
+path, base_url, model, ddg_interval, api_key, agent_url, agent_api_key = sys.argv[1:8]
 with open(path) as f:
     cfg = json.load(f)
 servers = cfg.setdefault("mcpServers", {})
@@ -309,6 +314,10 @@ if api_key:
     env["VLLM_API_KEY"] = api_key
 elif "VLLM_API_KEY" in env:
     del env["VLLM_API_KEY"]
+if agent_api_key:
+    env["VLLM_AGENT_API_KEY"] = agent_api_key
+elif "VLLM_AGENT_API_KEY" in env:
+    del env["VLLM_AGENT_API_KEY"]
 with open(path, "w") as f:
     json.dump(cfg, f, indent=2)
     f.write("\n")
@@ -320,6 +329,10 @@ fi
 
 # ---------- 18. Done — show endpoint + MCP config ----------
 ENDPOINT="http://${VM_IP}:${PORT}"
+AGENT_KEY_LINE=""
+if [[ -n "$AGENT_API_KEY" ]]; then
+  AGENT_KEY_LINE=$',\n          "VLLM_AGENT_API_KEY": "'"$AGENT_API_KEY"'"'
+fi
 cat <<EOF
 
 ============================================================
@@ -346,7 +359,7 @@ To register as an MCP server in Claude Code, add to your MCP config
           "VLLM_BASE_URL": "$ENDPOINT",
           "VLLM_MODEL": "$MODEL",
           "VLLM_AGENT_URL": "http://${VM_IP}:8088",
-          "DDG_MIN_INTERVAL_S": "$DDG_INTERVAL"$( [[ -n "$API_KEY" ]] && printf ',\n          "VLLM_API_KEY": "%s"' "$API_KEY")
+          "DDG_MIN_INTERVAL_S": "$DDG_INTERVAL"$( [[ -n "$API_KEY" ]] && printf ',\n          "VLLM_API_KEY": "%s"' "$API_KEY")${AGENT_KEY_LINE}
         }
       }
     }

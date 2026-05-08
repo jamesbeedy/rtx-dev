@@ -88,6 +88,7 @@ config:
         Environment=VLLM_BASE_URL=http://127.0.0.1:8000
         Environment=VLLM_MODEL=__VLLM_MODEL__
         Environment=DDG_MIN_INTERVAL_S=__DDG_MIN_INTERVAL__
+        Environment=VLLM_AGENT_API_KEY=__VLLM_AGENT_API_KEY__
         ExecStart=/home/ubuntu/rtx_5090_dev/vllm-agent/.venv-agent/bin/vllm-agent serve --host 0.0.0.0 --port 8088
         Restart=on-failure
         RestartSec=5
