@@ -140,6 +140,7 @@ sed \
   -e "s|__ROOT_SIZE__|$ROOT_SIZE|g" \
   -e "s|__LIMITS_CPU__|$CPUS|g" \
   -e "s|__LIMITS_MEMORY__|$MEMORY|g" \
+  -e "s|__DDG_MIN_INTERVAL__|$DDG_INTERVAL|g" \
   "$TEMPLATE" >"$RENDERED"
 
 log "Rendered profile to $RENDERED ($(wc -l <"$RENDERED") lines)"
