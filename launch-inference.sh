@@ -297,12 +297,12 @@ done
 log "VM IP: $VM_IP"
 
 # ---------- 16. Smoke test ----------
-log "Running smoke test against /v1/chat/completions..."
-AUTH_HEADER=""
-[[ -n "$API_KEY" ]] && AUTH_HEADER="-H 'Authorization: Bearer $API_KEY'"
-remote "lxc exec $VM_NAME -- curl -s $AUTH_HEADER http://127.0.0.1:$PORT/v1/chat/completions \
+log "Running smoke test against /v1/chat/completions (via nginx :8443)..."
+SMOKE_AUTH=""
+[[ -n "$API_KEY" ]] && SMOKE_AUTH="-H \"Authorization: Bearer $API_KEY\""
+remote "lxc exec $VM_NAME -- bash -c \"curl -s $SMOKE_AUTH http://127.0.0.1:8443/v1/chat/completions \
   -H 'Content-Type: application/json' \
-  -d '{\"model\":\"$MODEL\",\"messages\":[{\"role\":\"user\",\"content\":\"reply with: ready\"}],\"max_tokens\":8,\"temperature\":0}'" \
+  -d '{\\\"model\\\":\\\"$MODEL\\\",\\\"messages\\\":[{\\\"role\\\":\\\"user\\\",\\\"content\\\":\\\"reply with: ready\\\"}],\\\"max_tokens\\\":8,\\\"temperature\\\":0}'\"" \
   | python3 -c "import sys,json; r=json.load(sys.stdin); print('  reply:', r['choices'][0]['message']['content'])" || warn "Smoke test failed; API is up but completion call did not parse cleanly."
 
 # ---------- 17. Update local .mcp.json (so MCP server picks up new config) ----------
