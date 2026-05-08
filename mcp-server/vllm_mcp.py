@@ -27,7 +27,8 @@ Environment:
     VLLM_MODEL           default model id
     VLLM_API_KEY         optional Bearer auth
     VLLM_DEFAULT_SYSTEM  optional default system prompt for `ask`
-    DDG_MIN_INTERVAL_S   seconds between DDG requests (default 1.5)
+    DDG_MIN_INTERVAL_S   reported in health() output; actual DDG throttling
+                         lives in vllm-agent (default 1.5)
 """
 
 from __future__ import annotations
@@ -82,7 +83,6 @@ mcp = FastMCP("vllm-inference")
 # with only web_search available. This is the new shared engine for
 # ask/converse/critique/scaffold (replaces the local _generate).
 # ---------------------------------------------------------------------------
-import asyncio as _asyncio
 from pathlib import Path as _Path
 
 from vllm_agent.loop import LoopConfig as _LoopConfig, run_loop as _run_loop
@@ -270,6 +270,9 @@ async def ask(
 
     Returns: {"path", "bytes_written", "iterations", "search_log",
               "duration_s", "answer_preview"}.
+
+    Note: `max_results` is accepted for backward compatibility but is no longer
+    used — web_search uses its built-in default (5).
     """
     sys_prompt = DEFAULT_SYSTEM if system is None else system
     msgs: list[dict[str, Any]] = []
@@ -313,6 +316,9 @@ async def converse(
     `web_search` available and the final assistant reply is written to `out_path`.
 
     Returns the same metadata shape as `ask`.
+
+    Note: `max_results` is accepted for backward compatibility but is no longer
+    used — web_search uses its built-in default (5).
     """
     p = _Path(out_path).expanduser()
     out_dir_ag = p.parent if p.parent != _Path("") else _Path.cwd()
@@ -349,7 +355,11 @@ async def scaffold(
     require_files: list[str] | None = None,
     max_retries: int = 2,
 ) -> dict[str, Any]:
-    """Multi-file project generation. (See module docstring for details.)"""
+    """Multi-file project generation. (See module docstring for details.)
+
+    Note: `max_results` is accepted for backward compatibility but is no longer
+    used — web_search uses its built-in default (5).
+    """
     if system is not None:
         sys_prompt = system
     elif minimize_search:
@@ -462,6 +472,9 @@ async def critique(
     """Take an original task + a draft answer; produce a corrected version.
 
     Returns the same metadata shape as `ask`.
+
+    Note: `max_results` is accepted for backward compatibility but is no longer
+    used — web_search uses its built-in default (5).
     """
     system = (
         "You are a strict senior code reviewer. Given an original task and a draft "
