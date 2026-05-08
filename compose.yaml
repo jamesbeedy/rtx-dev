@@ -7,8 +7,9 @@
 # To enable ngrok, set in .env:
 #   NGROK_AUTHTOKEN=<token>
 #   NGROK_DOMAIN=<your-static-domain>.ngrok-free.dev
-#   NGROK_BASIC_AUTH=user:password  # gate at the edge so vllm stays un-keyed
 #   COMPOSE_PROFILES=ngrok           # so `docker compose up -d` includes it
+# Auth is end-to-end Bearer (VLLM_API_KEY for /v1/*, VLLM_AGENT_API_KEY for
+# /agent/*) — ngrok forwards the Authorization header through.
 
 services:
   vllm:
@@ -26,7 +27,9 @@ services:
       --port 8000 --host 0.0.0.0
       --quantization ${VLLM_QUANT_ARGS}
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/v1/models"]
+      # Use /health (no auth required) so the check works whether or not
+      # VLLM_API_KEY is set.
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 30s
       timeout: 5s
       retries: 60
@@ -65,26 +68,26 @@ services:
     ports:
       - "8443:8443"
 
-  # Optional public tunnel: maps a reserved ngrok domain to vllm:8000 (the
-  # OpenAI-compatible endpoint). The tunnel is gated at the ngrok edge with
-  # HTTP Basic auth (NGROK_BASIC_AUTH=user:password) so vllm itself can keep
-  # running un-keyed for the trusted local network. Opt in by setting
-  # COMPOSE_PROFILES=ngrok in .env alongside NGROK_AUTHTOKEN, NGROK_DOMAIN,
-  # NGROK_BASIC_AUTH.
+  # Optional public tunnel: maps a reserved ngrok domain to nginx:8443 (the
+  # unified endpoint), so /v1/* (vllm) and /agent/* (vllm-agent) are both
+  # reachable on one URL. Auth is end-to-end Bearer:
+  #   /v1/*    requires Authorization: Bearer ${VLLM_API_KEY}
+  #   /agent/* requires Authorization: Bearer ${VLLM_AGENT_API_KEY}
+  # ngrok edge basic-auth is intentionally NOT used because it would
+  # collide with the Bearer Authorization header.
   ngrok:
     image: ngrok/ngrok:latest
     profiles: ["ngrok"]
     restart: unless-stopped
     depends_on:
-      vllm:
-        condition: service_healthy
+      nginx:
+        condition: service_started
     environment:
       - NGROK_AUTHTOKEN=${NGROK_AUTHTOKEN}
     command:
       - "http"
       - "--url=https://${NGROK_DOMAIN}"
-      - "--basic-auth=${NGROK_BASIC_AUTH}"
-      - "http://vllm:8000"
+      - "http://nginx:8443"
 
 volumes:
   hf-cache:
