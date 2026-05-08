@@ -25,6 +25,8 @@ config:
           Description=vLLM OpenAI-compatible inference server (__VLLM_MODEL__)
           After=network-online.target
           Wants=network-online.target
+          StartLimitIntervalSec=120
+          StartLimitBurst=5
 
           [Service]
           Type=simple
@@ -73,6 +75,8 @@ config:
         Description=vllm-agent HTTP server (agent runtime backed by local vLLM)
         After=network-online.target vllm.service
         Wants=network-online.target
+        StartLimitIntervalSec=120
+        StartLimitBurst=5
 
         [Service]
         Type=simple
