@@ -179,3 +179,17 @@ def test_artifacts_tail_lines_caps_transcript(client, tmp_path):
     assert r.status_code == 200
     assert len(r.json()["transcript_tail"]) == 10
     assert r.json()["transcript_tail"][0]["i"] == 40
+
+
+def test_artifacts_401_when_key_set_and_missing(tmp_path, monkeypatch):
+    monkeypatch.setenv("VLLM_AGENT_API_KEY", "sekret")
+    import importlib
+    import vllm_agent.server as srv
+    importlib.reload(srv)
+    from fastapi.testclient import TestClient
+    out = tmp_path / "out"
+    out.mkdir()
+    (out / "summary.md").write_text("ok")
+    c = TestClient(srv.app)
+    r = c.get(f"/artifacts?out_dir={out}")
+    assert r.status_code == 401
