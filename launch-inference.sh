@@ -95,6 +95,14 @@ log()  { printf '==> %s\n' "$*" >&2; }
 warn() { printf '!!  %s\n' "$*" >&2; }
 die()  { printf 'XX  %s\n' "$*" >&2; exit 1; }
 
+# Reject characters that would break the sed delimiter (|) or systemd Environment= parsing.
+if [[ "$AGENT_API_KEY" == *"|"* ]]; then
+  die "AGENT_API_KEY must not contain '|' (used as sed delimiter)"
+fi
+if [[ "$API_KEY" == *"|"* ]]; then
+  die "API_KEY must not contain '|' (used as sed delimiter)"
+fi
+
 # remote: run a command on the LXD host over SSH
 remote() { ssh -o BatchMode=yes -o ConnectTimeout=10 "$LXD_HOST" "$@"; }
 
