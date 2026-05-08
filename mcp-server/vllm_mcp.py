@@ -9,7 +9,7 @@ non-negotiable:
   2. Generated content is always written to disk and only metadata returns.
      Claude's context never accumulates raw model output.
 
-Tool surface (13 total):
+Tool surface (14 total):
 
   Utility:
     - health()              probe the vLLM endpoint
@@ -31,6 +31,7 @@ Tool surface (13 total):
     - agent_session_step(session_id)    run one step
     - agent_session_status(session_id)  read session state
     - agent_session_stop(session_id)    stop a session
+    - agent_run_artifacts(out_dir, ...) read back artifacts of a completed run
 
 Environment:
     VLLM_BASE_URL        default http://127.0.0.1:8000
@@ -940,6 +941,63 @@ async def agent_session_stop(session_id: str, mode: str = "remote") -> dict[str,
     if mode == "local":
         return asdict(await _aststop_local(session_id))
     return await _http_session_stop(session_id)
+
+
+@mcp.tool()
+async def agent_run_artifacts(
+    out_dir: str,
+    mode: str = "remote",
+    tail_lines: int = 50,
+) -> dict[str, Any]:
+    """Read back the artifacts (summary.md, files_changed.txt, transcript tail)
+    of a completed agent run.
+
+    For mode='local' the artifacts live on the user's machine; this tool reads
+    them directly. For mode='remote' the artifacts live on the VM; this tool
+    fetches them via the vllm-agent HTTP API.
+
+    Returns: {out_dir, summary, files_changed, transcript_tail}.
+    """
+    if mode == "local":
+        from pathlib import Path
+        base = Path(out_dir).expanduser()
+        if not base.is_dir():
+            return {"error": f"out_dir not found: {base}"}
+        summary = ""
+        summary_p = base / "summary.md"
+        if summary_p.exists():
+            summary = summary_p.read_text()
+        files_changed: list[str] = []
+        fc_p = base / "files_changed.txt"
+        if fc_p.exists():
+            files_changed = [ln for ln in fc_p.read_text().splitlines() if ln.strip()]
+        transcript_tail: list[dict] = []
+        t_p = base / "transcript.jsonl"
+        if t_p.exists():
+            lines = [ln for ln in t_p.read_text().splitlines() if ln.strip()]
+            for ln in lines[-tail_lines:]:
+                try:
+                    transcript_tail.append(json.loads(ln))
+                except json.JSONDecodeError:
+                    continue
+        return {
+            "out_dir": str(base),
+            "summary": summary,
+            "files_changed": files_changed,
+            "transcript_tail": transcript_tail,
+        }
+    # mode == "remote"
+    if not VLLM_AGENT_URL:
+        return {"error": "VLLM_AGENT_URL not set; cannot use mode=remote"}
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        r = await client.get(
+            f"{VLLM_AGENT_URL}/artifacts",
+            params={"out_dir": out_dir, "tail_lines": tail_lines},
+            headers=_agent_headers(),
+        )
+    if r.status_code != 200:
+        return {"error": f"HTTP {r.status_code}: {r.text[:300]}"}
+    return r.json()
 
 
 # =============================================================================
