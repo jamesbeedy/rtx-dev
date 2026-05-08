@@ -1,0 +1,2 @@
+[console_scripts]
+vllm-agent = vllm_agent.cli:app
