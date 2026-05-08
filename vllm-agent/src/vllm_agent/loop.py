@@ -20,6 +20,7 @@ class LoopConfig:
     temperature: float = 0.2
     api_key: str | None = None
     request_timeout_s: float = 600.0
+    tools_subset: list[str] | None = None
 
 
 @dataclass
@@ -39,8 +40,10 @@ def _vllm_headers(api_key: str | None) -> dict[str, str]:
     return h
 
 
-def _tools_schema() -> list[dict[str, Any]]:
-    return [t.schema for t in WORKER_TOOLS.values()]
+def _tools_schema(subset: list[str] | None = None) -> list[dict[str, Any]]:
+    if subset is None:
+        return [t.schema for t in WORKER_TOOLS.values()]
+    return [t.schema for name, t in WORKER_TOOLS.items() if name in subset]
 
 
 async def run_loop(
@@ -65,7 +68,7 @@ async def run_loop(
                         json={
                             "model": cfg.vllm_model,
                             "messages": msgs,
-                            "tools": _tools_schema(),
+                            "tools": _tools_schema(cfg.tools_subset),
                             "tool_choice": "auto",
                             "max_tokens": cfg.max_tokens,
                             "temperature": cfg.temperature,

@@ -43,6 +43,10 @@ class SessionStore:
     def _dir(self, session_id: str) -> Path:
         return self.root / session_id
 
+    def session_dir(self, session_id: str) -> Path:
+        """Public alias for the session's on-disk directory."""
+        return self._dir(session_id)
+
     def create(self, goal: str, skill: str | None, mode: str,
                workdir: str, model: str | None) -> Session:
         sid = uuid.uuid4().hex[:12]

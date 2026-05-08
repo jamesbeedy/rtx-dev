@@ -174,3 +174,29 @@ async def test_loop_vllm_5xx_retried_once(tmp_path):
     result = await run_loop([{"role": "user", "content": "go"}], ctx, cfg)
     assert result.status == "ok"
     assert result.final_message_content == "ok now"
+
+
+@respx.mock
+async def test_loop_tools_subset_restricts_palette(tmp_path):
+    """When tools_subset is set, only those tools are advertised to vLLM."""
+    captured = {}
+
+    def _capture(request):
+        captured["body"] = json.loads(request.content)
+        return Response(200, json=_vllm_response(content="done"))
+
+    respx.post("https://vllm.example/v1/chat/completions").mock(side_effect=_capture)
+
+    ws = Workspace.resolve(str(tmp_path))
+    out_dir = tmp_path / "out"; out_dir.mkdir()
+    ctx = ToolContext(workspace=ws,
+                      transcript=Transcript(out_dir / "transcript.jsonl"),
+                      env={"VLLM_AGENT_OUT_DIR": str(out_dir)})
+    cfg = LoopConfig(vllm_base_url="https://vllm.example",
+                     vllm_model="m", max_iterations=1,
+                     max_tokens=64, temperature=0,
+                     tools_subset=["web_search"])
+    await run_loop([{"role": "user", "content": "go"}], ctx, cfg)
+
+    advertised = {t["function"]["name"] for t in captured["body"]["tools"]}
+    assert advertised == {"web_search"}

@@ -217,7 +217,7 @@ async def agent_session_start(req: AgentSessionStartRequest) -> AgentSessionStar
                      workdir=str(ws.root), model=req.model)
     return AgentSessionStartResult(
         session_id=s.session_id,
-        out_dir=str(store._dir(s.session_id)),
+        out_dir=str(store.session_dir(s.session_id)),
         status=s.status.value,
     )
 
@@ -243,13 +243,13 @@ async def agent_session_step(
         return AgentSessionStepResult(
             session_id=session_id, iterations_this_step=0,
             files_changed_this_step=[],
-            summary_path=str(store._dir(session_id) / "summary.md"),
+            summary_path=str(store.session_dir(session_id) / "summary.md"),
             status=s.status.value,
             step_status="not_started",
         )
 
     ws = Workspace.resolve(s.workdir)
-    sess_dir = store._dir(session_id)
+    sess_dir = store.session_dir(session_id)
     transcript = Transcript(sess_dir / "transcript.jsonl")
 
     skill_content = SkillLoader().load_skill(s.skill) if s.skill else None
@@ -333,7 +333,7 @@ async def agent_session_status(session_id: str) -> AgentSessionStatusResult:
         files_changed_total=s.files_changed_total,
         started_at=s.started_at,
         last_activity_at=s.last_activity_at,
-        out_dir=str(store._dir(session_id)),
+        out_dir=str(store.session_dir(session_id)),
     )
 
 
