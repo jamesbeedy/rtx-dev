@@ -40,6 +40,7 @@ class AgentRunRequest:
     temperature: float = 0.2
     timeout_s: int = 1800
     extra_context: list[str] | None = None
+    env_overlay: dict[str, str] | None = None
 
 
 @dataclass
@@ -127,7 +128,11 @@ async def agent_run(req: AgentRunRequest) -> AgentRunResult:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     ws = Workspace.resolve(req.workdir)
-    transcript = Transcript(out_dir / "transcript.jsonl")
+    env_overlay = dict(req.env_overlay or {})
+    transcript = Transcript(
+        out_dir / "transcript.jsonl",
+        redact_values=list(env_overlay.values()),
+    )
     if req.skill_content:
         skill_content = req.skill_content
     elif req.skill:
@@ -145,6 +150,7 @@ async def agent_run(req: AgentRunRequest) -> AgentRunResult:
             "VLLM_AGENT_LOCAL_BASH": os.environ.get("VLLM_AGENT_LOCAL_BASH", ""),
             "VLLM_AGENT_OUT_DIR": str(out_dir),
         },
+        env_overlay=env_overlay,
     )
     cfg = LoopConfig(
         vllm_base_url=os.environ.get("VLLM_BASE_URL", "http://127.0.0.1:8000"),

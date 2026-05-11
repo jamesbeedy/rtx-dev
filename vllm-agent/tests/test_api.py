@@ -280,3 +280,39 @@ async def test_agent_run_uses_skill_content_when_provided(tmp_path, monkeypatch)
     assert result.status == "ok"
     sys_msg = next(m for m in captured["body"]["messages"] if m["role"] == "system")
     assert "PROVIDED SKILL CONTENT" in sys_msg["content"]
+
+
+async def test_agent_run_passes_env_overlay_to_bash(tmp_path, monkeypatch):
+    """env_overlay on AgentRunRequest reaches the bash subprocess and is redacted in transcript."""
+    from vllm_agent.api import AgentRunRequest, agent_run
+
+    # Force a deterministic single bash call by stubbing run_loop.
+    captured: dict = {}
+
+    async def fake_run_loop(msgs, ctx, cfg):
+        from vllm_agent.tools.shell import bash_tool
+        result = await bash_tool.execute(
+            {"command": "echo TOKEN_IS=$GITHUB_TOKEN"}, ctx)
+        captured["bash_result"] = result
+        captured["ctx_overlay"] = ctx.env_overlay
+        from vllm_agent.loop import LoopResult
+        return LoopResult(
+            messages=msgs, iterations=1, status="ok",
+            final_message_content="done", error=None,
+        )
+
+    monkeypatch.setattr("vllm_agent.api.run_loop", fake_run_loop)
+
+    req = AgentRunRequest(
+        task="noop",
+        workdir=str(tmp_path),
+        out_dir=str(tmp_path / "out"),
+        env_overlay={"GITHUB_TOKEN": "ghp_overlaytest_98765"},
+        timeout_s=30,
+    )
+    result = await agent_run(req)
+    assert captured["ctx_overlay"] == {"GITHUB_TOKEN": "ghp_overlaytest_98765"}
+    assert "TOKEN_IS=ghp_overlaytest_98765" in captured["bash_result"]["stdout"]
+    # Transcript should have redacted the token.
+    transcript_text = (tmp_path / "out" / "transcript.jsonl").read_text()
+    assert "ghp_overlaytest_98765" not in transcript_text
