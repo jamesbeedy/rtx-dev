@@ -11,7 +11,10 @@
         "VLLM_API_KEY": "fb27740ae21328252b9f1f8647c8a5054d00ed558ba3aaf32f13d70fa54eb694",
         "DDG_MIN_INTERVAL_S": "1.5",
         "VLLM_AGENT_URL": "https://lumpishly-unbuskined-robby.ngrok-free.dev/agent",
-        "VLLM_AGENT_API_KEY": "eede60879ec6206df6bdf76c9cab7e2d71874ec7c4f709406bf895325748d0aa"
+        "VLLM_AGENT_API_KEY": "eede60879ec6206df6bdf76c9cab7e2d71874ec7c4f709406bf895325748d0aa",
+        "GITHUB_TOKEN": "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",
+        "GIT_AUTHOR_NAME": "James Beedy",
+        "GIT_AUTHOR_EMAIL": "jamesbeedy@gmail.com"
       }
     }
   }

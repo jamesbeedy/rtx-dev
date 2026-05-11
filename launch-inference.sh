@@ -19,6 +19,8 @@ GPU_UTIL="0.92"
 QUANTIZATION="awq_marlin --enable-auto-tool-choice --tool-call-parser qwen3_coder"
 API_KEY=""
 AGENT_API_KEY=""    # optional auth for vllm-agent serve (Bearer); default: no auth
+NGROK_AUTHTOKEN=""  # optional; if set, cloud-init configures snap ngrok with it
+NGROK_DOMAIN=""     # optional; if set with NGROK_AUTHTOKEN, compose ngrok service runs and .mcp.json points at https://$NGROK_DOMAIN
 PORT="8000"
 TARGET=""           # auto-detect from hostname of LXD_HOST
 GPU_PCI=""          # auto-detect from lspci on LXD_HOST
@@ -49,6 +51,13 @@ Common options (defaults shown):
   --api-key SECRET            Enable Bearer auth on vLLM (default: no auth).
   --agent-api-key SECRET      Enable Bearer auth on vllm-agent serve.
                               (Default: no auth — only safe on a trusted LAN.)
+  --ngrok-authtoken TOKEN     Ngrok auth token. Written to .env. Used by the
+                              docker compose ngrok service.
+  --ngrok-domain FQDN         Reserved ngrok static domain (e.g.
+                              foo-bar.ngrok-free.dev). When set together with
+                              --ngrok-authtoken, the compose ngrok service is
+                              enabled (COMPOSE_PROFILES=ngrok) and the printed
+                              endpoint + .mcp.json point at https://FQDN.
   --port $PORT
   --target NODE               LXD cluster member name (default: \$(hostname) on lxd-host).
   --gpu-pci 0000:XX:00.0      Override autodetected GPU PCI address.
@@ -77,6 +86,8 @@ while [[ $# -gt 0 ]]; do
     --quantization)   QUANTIZATION="$2"; shift 2;;
     --api-key)        API_KEY="$2"; shift 2;;
     --agent-api-key)  AGENT_API_KEY="$2"; shift 2;;
+    --ngrok-authtoken) NGROK_AUTHTOKEN="$2"; shift 2;;
+    --ngrok-domain)   NGROK_DOMAIN="$2"; shift 2;;
     --port)           PORT="$2"; shift 2;;
     --target)         TARGET="$2"; shift 2;;
     --gpu-pci)        GPU_PCI="$2"; shift 2;;
@@ -101,6 +112,15 @@ if [[ "$AGENT_API_KEY" == *"|"* ]]; then
 fi
 if [[ "$API_KEY" == *"|"* ]]; then
   die "API_KEY must not contain '|' (used as sed delimiter)"
+fi
+if [[ "$NGROK_AUTHTOKEN" == *"|"* ]]; then
+  die "NGROK_AUTHTOKEN must not contain '|'"
+fi
+if [[ "$NGROK_DOMAIN" == *"|"* ]]; then
+  die "NGROK_DOMAIN must not contain '|'"
+fi
+if [[ -n "$NGROK_DOMAIN" && -z "$NGROK_AUTHTOKEN" ]]; then
+  die "--ngrok-domain requires --ngrok-authtoken"
 fi
 
 # remote: run a command on the LXD host over SSH
@@ -236,6 +256,9 @@ VLLM_GPU_UTIL=$GPU_UTIL
 VLLM_API_KEY=$API_KEY
 VLLM_AGENT_API_KEY=$AGENT_API_KEY
 DDG_MIN_INTERVAL_S=$DDG_INTERVAL
+NGROK_AUTHTOKEN=$NGROK_AUTHTOKEN
+NGROK_DOMAIN=$NGROK_DOMAIN
+$( [[ -n "$NGROK_AUTHTOKEN" && -n "$NGROK_DOMAIN" ]] && echo "COMPOSE_PROFILES=ngrok" )
 ENV_EOF
 chown ubuntu:ubuntu /home/ubuntu/rtx_5090_dev/.env
 chmod 600 /home/ubuntu/rtx_5090_dev/.env'"
@@ -246,9 +269,13 @@ log "Starting compose stack (docker compose up -d)..."
 remote "lxc exec $VM_NAME -- su - ubuntu -c 'cd ~/rtx_5090_dev && docker compose up -d'"
 
 # ---------- 15. Poll vLLM /v1/models via nginx until ready ----------
+# Build curl auth header if API key is set (so /v1/models doesn't 401)
+VLLM_PROBE_AUTH=""
+[[ -n "$API_KEY" ]] && VLLM_PROBE_AUTH="-H \"Authorization: Bearer $API_KEY\""
+
 log "Polling vLLM /v1/models via nginx (model first-load downloads ~18 GiB on initial run)..."
 for i in $(seq 1 90); do
-  if remote "lxc exec $VM_NAME -- curl -s --max-time 3 http://127.0.0.1:8443/v1/models" 2>/dev/null | grep -q '"object":"list"'; then
+  if remote "lxc exec $VM_NAME -- bash -c \"curl -s --max-time 3 $VLLM_PROBE_AUTH http://127.0.0.1:8443/v1/models\"" 2>/dev/null | grep -q '"object":"list"'; then
     log "vLLM API ready after ${i}x10s"
     break
   fi
@@ -259,7 +286,7 @@ for i in $(seq 1 90); do
   sleep 10
 done
 
-if ! remote "lxc exec $VM_NAME -- curl -s --max-time 3 http://127.0.0.1:8443/v1/models" 2>/dev/null | grep -q '"object":"list"'; then
+if ! remote "lxc exec $VM_NAME -- bash -c \"curl -s --max-time 3 $VLLM_PROBE_AUTH http://127.0.0.1:8443/v1/models\"" 2>/dev/null | grep -q '"object":"list"'; then
   warn "vLLM API not yet responding after 15 min. Tailing recent vllm container logs:"
   remote "lxc exec $VM_NAME -- su - ubuntu -c 'cd ~/rtx_5090_dev && docker compose logs --tail=40 vllm'" || true
   die "vLLM did not start in the expected window. Inspect with: ssh $LXD_HOST -- lxc exec $VM_NAME -- su - ubuntu -c 'cd ~/rtx_5090_dev && docker compose logs -f vllm'"
@@ -305,11 +332,20 @@ remote "lxc exec $VM_NAME -- bash -c \"curl -s $SMOKE_AUTH http://127.0.0.1:8443
   -d '{\\\"model\\\":\\\"$MODEL\\\",\\\"messages\\\":[{\\\"role\\\":\\\"user\\\",\\\"content\\\":\\\"reply with: ready\\\"}],\\\"max_tokens\\\":8,\\\"temperature\\\":0}'\"" \
   | python3 -c "import sys,json; r=json.load(sys.stdin); print('  reply:', r['choices'][0]['message']['content'])" || warn "Smoke test failed; API is up but completion call did not parse cleanly."
 
-# ---------- 17. Update local .mcp.json (so MCP server picks up new config) ----------
+# ---------- 17. Pick public endpoint (ngrok FQDN if set, else VM IP) ----------
+if [[ -n "$NGROK_DOMAIN" && -n "$NGROK_AUTHTOKEN" ]]; then
+  PUBLIC_BASE="https://${NGROK_DOMAIN}"
+  log "Using ngrok FQDN as public endpoint: $PUBLIC_BASE"
+else
+  PUBLIC_BASE="http://${VM_IP}:8443"
+fi
+PUBLIC_AGENT="${PUBLIC_BASE}/agent"
+
+# ---------- 17b. Update local .mcp.json (so MCP server picks up new config) ----------
 MCP_JSON="$SCRIPT_DIR/.mcp.json"
 if [[ -f "$MCP_JSON" ]]; then
-  log "Updating $MCP_JSON with VLLM_BASE_URL=http://${VM_IP}:8443, VLLM_MODEL=$MODEL, DDG_MIN_INTERVAL_S=$DDG_INTERVAL..."
-  python3 - "$MCP_JSON" "http://${VM_IP}:8443" "$MODEL" "$DDG_INTERVAL" "$API_KEY" "http://${VM_IP}:8443/agent" "$AGENT_API_KEY" <<'PYEOF'
+  log "Updating $MCP_JSON with VLLM_BASE_URL=$PUBLIC_BASE, VLLM_MODEL=$MODEL, DDG_MIN_INTERVAL_S=$DDG_INTERVAL..."
+  python3 - "$MCP_JSON" "$PUBLIC_BASE" "$MODEL" "$DDG_INTERVAL" "$API_KEY" "$PUBLIC_AGENT" "$AGENT_API_KEY" <<'PYEOF'
 import json, sys
 path, base_url, model, ddg_interval, api_key, agent_url, agent_api_key = sys.argv[1:8]
 with open(path) as f:
@@ -341,23 +377,29 @@ else
 fi
 
 # ---------- 18. Done — show endpoint + MCP config ----------
-ENDPOINT="http://${VM_IP}:8443"
+ENDPOINT="$PUBLIC_BASE"
 AGENT_KEY_LINE=""
 if [[ -n "$AGENT_API_KEY" ]]; then
   AGENT_KEY_LINE=$',\n          "VLLM_AGENT_API_KEY": "'"$AGENT_API_KEY"'"'
+fi
+NGROK_LINE=""
+if [[ -n "$NGROK_DOMAIN" && -n "$NGROK_AUTHTOKEN" ]]; then
+  NGROK_LINE="  Ngrok tunnel:    https://${NGROK_DOMAIN}  ->  nginx:8443 (docker compose ngrok service)"
 fi
 cat <<EOF
 
 ============================================================
  vLLM ready
 ============================================================
-  Endpoint:        http://${VM_IP}:8443           (vLLM via nginx)
-  Agent endpoint:  http://${VM_IP}:8443/agent     (vllm-agent via nginx)
+  Endpoint:        ${PUBLIC_BASE}           (vLLM)
+  Agent endpoint:  ${PUBLIC_AGENT}     (vllm-agent)
+  VM-local:        http://${VM_IP}:8443      (nginx on the VM, behind ngrok)
   Model:           $MODEL
   Max model len:   $MAX_LEN
   API key:         ${API_KEY:-(none)}
   VM:              $VM_NAME on $TARGET (GPU $GPU_PCI)
   Profile:         $PROFILE_NAME
+${NGROK_LINE}
   Tail logs:       ssh $LXD_HOST -- lxc exec $VM_NAME -- su - ubuntu -c 'cd ~/rtx_5090_dev && docker compose logs -f vllm'
 
 To register as an MCP server in Claude Code, add to your MCP config
@@ -371,7 +413,7 @@ To register as an MCP server in Claude Code, add to your MCP config
         "env": {
           "VLLM_BASE_URL": "$ENDPOINT",
           "VLLM_MODEL": "$MODEL",
-          "VLLM_AGENT_URL": "http://${VM_IP}:8443/agent",
+          "VLLM_AGENT_URL": "$PUBLIC_AGENT",
           "DDG_MIN_INTERVAL_S": "$DDG_INTERVAL"$( [[ -n "$API_KEY" ]] && printf ',\n          "VLLM_API_KEY": "%s"' "$API_KEY")${AGENT_KEY_LINE}
         }
       }
