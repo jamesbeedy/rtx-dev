@@ -24,6 +24,7 @@
 | `agent_session_step` | Run one step of a session |
 | `agent_session_status` | Get session state |
 | `agent_session_stop` | Stop a session |
+| `agent_run_artifacts` | Read back artifacts (summary, files changed, transcript) of a completed run |
 
 ## Mode Selection
 

@@ -60,6 +60,7 @@ from typing import Any
 import httpx
 import yaml
 from mcp.server.fastmcp import FastMCP
+from mcp.types import ToolAnnotations
 
 VLLM_BASE_URL = os.environ.get("VLLM_BASE_URL", "http://127.0.0.1:8000").rstrip("/")
 VLLM_MODEL = os.environ.get("VLLM_MODEL", "")
@@ -196,6 +197,27 @@ async def _run_via_vllm_agent(
     }
 
 
+async def _http_agent(
+    method: str,
+    path: str,
+    *,
+    body: dict | None = None,
+    params: dict | None = None,
+    timeout: float = 30.0,
+) -> dict[str, Any]:
+    if not VLLM_AGENT_URL:
+        return {"status": "error", "error": "VLLM_AGENT_URL not set"}
+    url = f"{VLLM_AGENT_URL}{path}"
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        if method == "GET":
+            r = await client.get(url, params=params, headers=_agent_headers())
+        else:
+            r = await client.post(url, json=body or {}, headers=_agent_headers())
+    if r.status_code != 200:
+        return {"status": "error", "error": f"HTTP {r.status_code}: {r.text[:300]}"}
+    return r.json()
+
+
 async def _agent_run_remote(req: _AgentRunRequest) -> dict[str, Any]:
     """POST the request to the VM's vllm-agent serve endpoint."""
     if not VLLM_AGENT_URL:
@@ -209,47 +231,23 @@ async def _agent_run_remote(req: _AgentRunRequest) -> dict[str, Any]:
         "extra_context": req.extra_context, "skill_content": req.skill_content,
         "env_overlay": _build_env_overlay() or None,
     }
-    async with httpx.AsyncClient(timeout=float(req.timeout_s + 30)) as client:
-        r = await client.post(f"{VLLM_AGENT_URL}/run", json=body, headers=_agent_headers())
-    if r.status_code != 200:
-        return {"status": "error", "error": f"VM agent HTTP {r.status_code}: {r.text[:300]}"}
-    return r.json()
+    return await _http_agent("POST", "/run", body=body, timeout=float(req.timeout_s + 30))
 
 
 async def _http_session_start(body: dict) -> dict[str, Any]:
-    if not VLLM_AGENT_URL:
-        return {"status": "error", "error": "VLLM_AGENT_URL not set"}
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        r = await client.post(f"{VLLM_AGENT_URL}/session", json=body, headers=_agent_headers())
-    return r.json() if r.status_code == 200 else {"status": "error",
-                                                   "error": f"HTTP {r.status_code}: {r.text[:300]}"}
+    return await _http_agent("POST", "/session", body=body, timeout=30.0)
 
 
 async def _http_session_step(session_id: str, body: dict) -> dict[str, Any]:
-    if not VLLM_AGENT_URL:
-        return {"status": "error", "error": "VLLM_AGENT_URL not set"}
-    async with httpx.AsyncClient(timeout=1800.0) as client:
-        r = await client.post(f"{VLLM_AGENT_URL}/session/{session_id}/step", json=body, headers=_agent_headers())
-    return r.json() if r.status_code == 200 else {"status": "error",
-                                                   "error": f"HTTP {r.status_code}: {r.text[:300]}"}
+    return await _http_agent("POST", f"/session/{session_id}/step", body=body, timeout=1800.0)
 
 
 async def _http_session_status(session_id: str) -> dict[str, Any]:
-    if not VLLM_AGENT_URL:
-        return {"status": "error", "error": "VLLM_AGENT_URL not set"}
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        r = await client.get(f"{VLLM_AGENT_URL}/session/{session_id}", headers=_agent_headers())
-    return r.json() if r.status_code == 200 else {"status": "error",
-                                                   "error": f"HTTP {r.status_code}: {r.text[:300]}"}
+    return await _http_agent("GET", f"/session/{session_id}", timeout=10.0)
 
 
 async def _http_session_stop(session_id: str) -> dict[str, Any]:
-    if not VLLM_AGENT_URL:
-        return {"status": "error", "error": "VLLM_AGENT_URL not set"}
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        r = await client.post(f"{VLLM_AGENT_URL}/session/{session_id}/stop", headers=_agent_headers())
-    return r.json() if r.status_code == 200 else {"status": "error",
-                                                   "error": f"HTTP {r.status_code}: {r.text[:300]}"}
+    return await _http_agent("POST", f"/session/{session_id}/stop", timeout=10.0)
 
 
 def _vllm_headers() -> dict[str, str]:
@@ -327,7 +325,12 @@ def _write_answer(out_path: str, answer: str, search_log: list[dict[str, Any]],
 # Tools: utility
 # =============================================================================
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(
+    readOnlyHint=True,
+    destructiveHint=False,
+    idempotentHint=True,
+    openWorldHint=True
+))
 async def health() -> dict[str, Any]:
     """Probe the vLLM endpoint and return basic status info."""
     async with httpx.AsyncClient(timeout=5.0) as client:
@@ -345,7 +348,12 @@ async def health() -> dict[str, Any]:
     }
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(
+    readOnlyHint=True,
+    destructiveHint=False,
+    idempotentHint=True,
+    openWorldHint=True
+))
 async def list_models() -> list[str]:
     """List model ids served by the configured vLLM endpoint."""
     async with httpx.AsyncClient(timeout=10.0) as client:
@@ -358,14 +366,18 @@ async def list_models() -> list[str]:
 # Tools: generation (all write-to-disk + search-enabled)
 # =============================================================================
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(
+    readOnlyHint=False,
+    destructiveHint=False,
+    idempotentHint=False,
+    openWorldHint=True
+))
 async def ask(
     prompt: str,
     out_path: str,
     system: str | None = None,
     model: str | None = None,
     max_iterations: int = 3,
-    max_results: int = 5,
     max_tokens: int = 1500,
     temperature: float = 0.3,
     include_log: bool = False,
@@ -375,9 +387,6 @@ async def ask(
 
     Returns: {"path", "bytes_written", "iterations", "search_log",
               "duration_s", "answer_preview"}.
-
-    Note: `max_results` is accepted for backward compatibility but is no longer
-    used — web_search uses its built-in default (5).
     """
     sys_prompt = DEFAULT_SYSTEM if system is None else system
     msgs: list[dict[str, Any]] = []
@@ -402,17 +411,21 @@ async def ask(
         "iterations": result["iterations"],
         "search_log": result["search_log"],
         "duration_s": round(elapsed, 2),
-        "answer_preview": result["answer"][:80],
+        "answer_preview": result["answer"][:200],
     }
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(
+    readOnlyHint=False,
+    destructiveHint=False,
+    idempotentHint=False,
+    openWorldHint=True
+))
 async def converse(
     messages: list[dict[str, Any]],
     out_path: str,
     model: str | None = None,
     max_iterations: int = 3,
-    max_results: int = 5,
     max_tokens: int = 1500,
     temperature: float = 0.3,
     include_log: bool = False,
@@ -421,9 +434,6 @@ async def converse(
     `web_search` available and the final assistant reply is written to `out_path`.
 
     Returns the same metadata shape as `ask`.
-
-    Note: `max_results` is accepted for backward compatibility but is no longer
-    used — web_search uses its built-in default (5).
     """
     p = _Path(out_path).expanduser()
     out_dir_ag = p.parent if p.parent != _Path("") else _Path.cwd()
@@ -442,18 +452,22 @@ async def converse(
         "iterations": result["iterations"],
         "search_log": result["search_log"],
         "duration_s": round(elapsed, 2),
-        "answer_preview": result["answer"][:80],
+        "answer_preview": result["answer"][:200],
     }
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(
+    readOnlyHint=False,
+    destructiveHint=False,
+    idempotentHint=False,
+    openWorldHint=True
+))
 async def scaffold(
     prompt: str,
     out_dir: str,
     system: str | None = None,
     model: str | None = None,
     max_iterations: int = 3,
-    max_results: int = 5,
     max_tokens: int = 4096,
     temperature: float = 0.2,
     minimize_search: bool = True,
@@ -562,14 +576,18 @@ async def scaffold(
     }
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(
+    readOnlyHint=False,
+    destructiveHint=False,
+    idempotentHint=False,
+    openWorldHint=True
+))
 async def critique(
     prompt: str,
     draft: str,
     out_path: str,
     model: str | None = None,
     max_iterations: int = 2,
-    max_results: int = 4,
     max_tokens: int = 2000,
     temperature: float = 0.2,
     include_log: bool = False,
@@ -616,7 +634,7 @@ async def critique(
         "iterations": result["iterations"],
         "search_log": result["search_log"],
         "duration_s": round(elapsed, 2),
-        "answer_preview": result["answer"][:80],
+        "answer_preview": result["answer"][:200],
     }
 
 
@@ -695,8 +713,13 @@ def _verify_charm(base: Path, charmcraft_path: Path,
     }
 
 
-@mcp.tool()
-def verify_project(
+@mcp.tool(annotations=ToolAnnotations(
+    readOnlyHint=True,
+    destructiveHint=False,
+    idempotentHint=True,
+    openWorldHint=False
+))
+async def verify_project(
     path: str,
     isolated: bool = False,
     timeout: float = 30.0,
@@ -874,7 +897,12 @@ def verify_project(
 # Tools: agent dispatch
 # =============================================================================
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(
+    readOnlyHint=False,
+    destructiveHint=True,
+    idempotentHint=False,
+    openWorldHint=True
+))
 async def agent_run(
     task: str,
     skill: str | None = None,
@@ -923,7 +951,12 @@ async def agent_run(
         return await _agent_run_remote(req)
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(
+    readOnlyHint=False,
+    destructiveHint=True,
+    idempotentHint=False,
+    openWorldHint=True
+))
 async def agent_session_start(
     goal: str,
     skill: str | None = None,
@@ -956,7 +989,12 @@ async def agent_session_start(
     })
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(
+    readOnlyHint=False,
+    destructiveHint=True,
+    idempotentHint=False,
+    openWorldHint=True
+))
 async def agent_session_step(
     session_id: str,
     nudge: str | None = None,
@@ -972,7 +1010,12 @@ async def agent_session_step(
     })
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(
+    readOnlyHint=True,
+    destructiveHint=False,
+    idempotentHint=True,
+    openWorldHint=True
+))
 async def agent_session_status(session_id: str, mode: str = "remote") -> dict[str, Any]:
     """Get the current state of a session."""
     if mode == "local":
@@ -980,7 +1023,12 @@ async def agent_session_status(session_id: str, mode: str = "remote") -> dict[st
     return await _http_session_status(session_id)
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(
+    readOnlyHint=False,
+    destructiveHint=False,
+    idempotentHint=True,
+    openWorldHint=True
+))
 async def agent_session_stop(session_id: str, mode: str = "remote") -> dict[str, Any]:
     """Stop a session. Subsequent steps return immediately with status=stopped."""
     if mode == "local":
@@ -988,7 +1036,12 @@ async def agent_session_stop(session_id: str, mode: str = "remote") -> dict[str,
     return await _http_session_stop(session_id)
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(
+    readOnlyHint=True,
+    destructiveHint=False,
+    idempotentHint=True,
+    openWorldHint=True
+))
 async def agent_run_artifacts(
     out_dir: str,
     mode: str = "remote",
@@ -1032,24 +1085,23 @@ async def agent_run_artifacts(
             "transcript_tail": transcript_tail,
         }
     # mode == "remote"
-    if not VLLM_AGENT_URL:
-        return {"error": "VLLM_AGENT_URL not set; cannot use mode=remote"}
-    async with httpx.AsyncClient(timeout=15.0) as client:
-        r = await client.get(
-            f"{VLLM_AGENT_URL}/artifacts",
-            params={"out_dir": out_dir, "tail_lines": tail_lines},
-            headers=_agent_headers(),
-        )
-    if r.status_code != 200:
-        return {"error": f"HTTP {r.status_code}: {r.text[:300]}"}
-    return r.json()
+    return await _http_agent(
+        "GET", "/artifacts",
+        params={"out_dir": out_dir, "tail_lines": tail_lines},
+        timeout=15.0,
+    )
 
 
 # =============================================================================
 # Tools: skill discovery
 # =============================================================================
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(
+    readOnlyHint=True,
+    destructiveHint=False,
+    idempotentHint=True,
+    openWorldHint=False
+))
 async def list_skills() -> list[dict[str, Any]]:
     """List all skills discoverable from configured roots (project, user,
     superpowers). Returns: [{"name", "source", "path", "description"}, ...].
