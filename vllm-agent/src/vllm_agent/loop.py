@@ -2,11 +2,24 @@
 from __future__ import annotations
 
 import json
+import re
 from collections import Counter
 from dataclasses import dataclass, field
 from typing import Any
 
 import httpx
+
+_FENCE_RE = re.compile(r"^\s*```[a-zA-Z0-9]*\n?(.*?)\n?```\s*$", re.DOTALL)
+
+
+def _strip_fences(text: str) -> str:
+    """Strip markdown code fences from model output — applied recursively until stable."""
+    while True:
+        m = _FENCE_RE.match(text.strip())
+        if not m:
+            break
+        text = m.group(1)
+    return text.strip()
 
 from .tools import WORKER_TOOLS, ToolContext
 
@@ -103,10 +116,14 @@ async def run_loop(
             for tc in tool_calls:
                 fn = (tc.get("function") or {})
                 name = fn.get("name", "")
+                raw = fn.get("arguments") or "{}"
                 try:
-                    args = json.loads(fn.get("arguments") or "{}")
+                    args = json.loads(raw)
                 except json.JSONDecodeError:
-                    args = {}
+                    try:
+                        args = json.loads(_strip_fences(raw))
+                    except json.JSONDecodeError:
+                        args = {}
                 tool_counts[name] += 1
                 tool = WORKER_TOOLS.get(name)
                 if tool is None:

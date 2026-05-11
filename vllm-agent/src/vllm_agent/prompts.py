@@ -28,6 +28,9 @@ Discipline:
 - Iterate until the task is done or you hit a blocker.
 - Never edit files outside {workdir}.
 - Use web_search for facts you don't reliably know.
+- NEVER wrap tool call arguments in markdown code fences (``` ```).
+  Pass raw JSON directly. Fenced arguments cannot be parsed and the tool
+  will be called with empty args.
 
 Verify-before-finish:
 - BEFORE calling finish(), VERIFY the work you claim to have done. Use bash:
