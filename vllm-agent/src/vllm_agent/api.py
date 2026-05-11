@@ -234,6 +234,7 @@ class AgentSessionStartRequest:
     mode: str = "remote"
     workdir: str | None = None
     model: str | None = None
+    env_overlay: dict[str, str] | None = None
 
 
 @dataclass
@@ -253,6 +254,7 @@ async def agent_session_start(req: AgentSessionStartRequest) -> AgentSessionStar
         mode=req.mode,
         workdir=str(ws.root),
         model=req.model,
+        env_overlay=req.env_overlay,
     )
     return AgentSessionStartResult(
         session_id=s.session_id,
@@ -289,7 +291,11 @@ async def agent_session_step(
 
     ws = Workspace.resolve(s.workdir)
     sess_dir = store.session_dir(session_id)
-    transcript = Transcript(sess_dir / "transcript.jsonl")
+    env_overlay = dict(s.env_overlay or {})
+    transcript = Transcript(
+        sess_dir / "transcript.jsonl",
+        redact_values=list(env_overlay.values()),
+    )
 
     if s.skill_content:
         skill_content = s.skill_content
@@ -320,6 +326,7 @@ async def agent_session_step(
             "VLLM_AGENT_LOCAL_BASH": os.environ.get("VLLM_AGENT_LOCAL_BASH", ""),
             "VLLM_AGENT_OUT_DIR": str(sess_dir),
         },
+        env_overlay=env_overlay,
     )
     cfg = LoopConfig(
         vllm_base_url=os.environ.get("VLLM_BASE_URL", "http://127.0.0.1:8000"),

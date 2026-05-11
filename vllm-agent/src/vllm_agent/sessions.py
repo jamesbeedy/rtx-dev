@@ -31,6 +31,7 @@ class Session:
     skill_content: str | None = None
     iterations_total: int = 0
     files_changed_total: list[str] = field(default_factory=list)
+    env_overlay: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -57,6 +58,7 @@ class SessionStore:
         mode: str,
         workdir: str,
         model: str | None,
+        env_overlay: dict[str, str] | None = None,
     ) -> Session:
         sid = uuid.uuid4().hex[:12]
         now = time.time()
@@ -71,6 +73,7 @@ class SessionStore:
             status=SessionStatus.RUNNING,
             started_at=now,
             last_activity_at=now,
+            env_overlay=dict(env_overlay or {}),
         )
         d = self._dir(sid)
         d.mkdir(parents=True, exist_ok=True)

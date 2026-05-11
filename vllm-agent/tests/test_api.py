@@ -282,6 +282,22 @@ async def test_agent_run_uses_skill_content_when_provided(tmp_path, monkeypatch)
     assert "PROVIDED SKILL CONTENT" in sys_msg["content"]
 
 
+async def test_session_start_persists_env_overlay(tmp_path, monkeypatch):
+    monkeypatch.setenv("VLLM_AGENT_SESSION_ROOT", str(tmp_path / "sessions"))
+    from vllm_agent.api import (
+        AgentSessionStartRequest, agent_session_start, _session_store,
+    )
+    req = AgentSessionStartRequest(
+        goal="noop",
+        workdir=str(tmp_path),
+        env_overlay={"GITHUB_TOKEN": "ghp_sessoverlay_42"},
+    )
+    res = await agent_session_start(req)
+    s = _session_store().load(res.session_id)
+    assert s.env_overlay == {"GITHUB_TOKEN": "ghp_sessoverlay_42"}
+
+
+@respx.mock
 async def test_agent_run_passes_env_overlay_to_bash(tmp_path, monkeypatch):
     """env_overlay on AgentRunRequest reaches the bash subprocess and is redacted in transcript."""
     from vllm_agent.api import AgentRunRequest, agent_run
