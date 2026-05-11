@@ -119,6 +119,10 @@ fi
 if [[ "$NGROK_DOMAIN" == *"|"* ]]; then
   die "NGROK_DOMAIN must not contain '|'"
 fi
+# Strip scheme and trailing slash if the user pasted a full URL.
+NGROK_DOMAIN="${NGROK_DOMAIN#https://}"
+NGROK_DOMAIN="${NGROK_DOMAIN#http://}"
+NGROK_DOMAIN="${NGROK_DOMAIN%/}"
 if [[ -n "$NGROK_DOMAIN" && -z "$NGROK_AUTHTOKEN" ]]; then
   die "--ngrok-domain requires --ngrok-authtoken"
 fi
@@ -269,13 +273,14 @@ log "Starting compose stack (docker compose up -d)..."
 remote "lxc exec $VM_NAME -- su - ubuntu -c 'cd ~/rtx_5090_dev && docker compose up -d'"
 
 # ---------- 15. Poll vLLM /v1/models via nginx until ready ----------
-# Build curl auth header if API key is set (so /v1/models doesn't 401)
-VLLM_PROBE_AUTH=""
-[[ -n "$API_KEY" ]] && VLLM_PROBE_AUTH="-H \"Authorization: Bearer $API_KEY\""
+# Pass auth via env var to avoid nested-quote breakage through ssh+bash -c.
+vllm_probe() {
+  remote "lxc exec $VM_NAME --env VLLM_API_KEY='$API_KEY' -- bash -c 'curl -s --max-time 3 \${VLLM_API_KEY:+-H \"Authorization: Bearer \$VLLM_API_KEY\"} http://127.0.0.1:8443/v1/models'" 2>/dev/null
+}
 
 log "Polling vLLM /v1/models via nginx (model first-load downloads ~18 GiB on initial run)..."
 for i in $(seq 1 90); do
-  if remote "lxc exec $VM_NAME -- bash -c \"curl -s --max-time 3 $VLLM_PROBE_AUTH http://127.0.0.1:8443/v1/models\"" 2>/dev/null | grep -q '"object":"list"'; then
+  if vllm_probe | grep -q '"object":"list"'; then
     log "vLLM API ready after ${i}x10s"
     break
   fi
@@ -286,27 +291,27 @@ for i in $(seq 1 90); do
   sleep 10
 done
 
-if ! remote "lxc exec $VM_NAME -- bash -c \"curl -s --max-time 3 $VLLM_PROBE_AUTH http://127.0.0.1:8443/v1/models\"" 2>/dev/null | grep -q '"object":"list"'; then
+if ! vllm_probe | grep -q '"object":"list"'; then
   warn "vLLM API not yet responding after 15 min. Tailing recent vllm container logs:"
   remote "lxc exec $VM_NAME -- su - ubuntu -c 'cd ~/rtx_5090_dev && docker compose logs --tail=40 vllm'" || true
   die "vLLM did not start in the expected window. Inspect with: ssh $LXD_HOST -- lxc exec $VM_NAME -- su - ubuntu -c 'cd ~/rtx_5090_dev && docker compose logs -f vllm'"
 fi
 
 # ---------- 16. Poll vllm-agent via nginx /agent/skills until ready ----------
-# Build curl auth header if agent key is set (for the probe to bypass 401)
-PROBE_AUTH=""
-[[ -n "$AGENT_API_KEY" ]] && PROBE_AUTH="-H \"Authorization: Bearer $AGENT_API_KEY\""
+agent_probe() {
+  remote "lxc exec $VM_NAME --env VLLM_AGENT_API_KEY='$AGENT_API_KEY' -- bash -c 'curl -s --max-time 3 \${VLLM_AGENT_API_KEY:+-H \"Authorization: Bearer \$VLLM_AGENT_API_KEY\"} http://127.0.0.1:8443/agent/skills'" 2>/dev/null
+}
 
 log "Polling vllm-agent (via nginx /agent/skills)..."
 for i in $(seq 1 60); do
-  if remote "lxc exec $VM_NAME -- bash -c \"curl -s --max-time 3 $PROBE_AUTH http://127.0.0.1:8443/agent/skills\"" 2>/dev/null | grep -q '\['; then
+  if agent_probe | grep -q '\['; then
     log "vllm-agent ready after ${i}x5s"
     break
   fi
   sleep 5
 done
 
-if ! remote "lxc exec $VM_NAME -- bash -c \"curl -s --max-time 3 $PROBE_AUTH http://127.0.0.1:8443/agent/skills\"" 2>/dev/null | grep -q '\['; then
+if ! agent_probe | grep -q '\['; then
   warn "vllm-agent not yet responding after 5 min. Tailing recent container logs:"
   remote "lxc exec $VM_NAME -- su - ubuntu -c 'cd ~/rtx_5090_dev && docker compose logs --tail=40 vllm-agent'" || true
   warn "vllm-agent will be unavailable; agent_run(mode=remote) will return errors. Investigate with:"
