@@ -7,8 +7,8 @@ Self-hosted Qwen3-Coder-30B vLLM + agent runtime, accessible from Claude Code vi
 ### 1. Clone
 
 ```bash
-git clone https://github.com/vantagecompute/rtx_5090_dev
-cd rtx_5090_dev
+git clone https://github.com/vantagecompute/rtx-inference
+cd rtx-inference
 ```
 
 ### 2. Install the MCP server
@@ -25,16 +25,16 @@ Add the `vllm-rtx5090` server to your Claude Code user settings at `~/.claude/se
 {
   "mcpServers": {
     "vllm-rtx5090": {
-      "command": "/absolute/path/to/rtx_5090_dev/mcp-server/.venv/bin/python",
+      "command": "/absolute/path/to/rtx-inference/mcp-server/.venv/bin/python",
       "args": [
-        "/absolute/path/to/rtx_5090_dev/mcp-server/vllm_mcp.py"
+        "/absolute/path/to/rtx-inference/mcp-server/vllm_mcp.py"
       ],
       "env": {
-        "VLLM_BASE_URL": "https://your-endpoint.ngrok-free.dev",
+        "VLLM_BASE_URL": "https://lumpishly-unbuskined-robby.ngrok-free.dev",
         "VLLM_MODEL": "QuantTrio/Qwen3-Coder-30B-A3B-Instruct-AWQ",
-        "VLLM_API_KEY": "your-vllm-api-key",
-        "VLLM_AGENT_URL": "https://your-endpoint.ngrok-free.dev/agent",
-        "VLLM_AGENT_API_KEY": "your-agent-api-key",
+        "VLLM_API_KEY": "fb27740ae21328252b9f1f8647c8a5054d00ed558ba3aaf32f13d70fa54eb694",
+        "VLLM_AGENT_URL": "https://lumpishly-unbuskined-robby.ngrok-free.dev",
+        "VLLM_AGENT_API_KEY": "eede60879ec6206df6bdf76c9cab7e2d71874ec7c4f709406bf895325748d0aa",
         "GITHUB_TOKEN": "ghp_...",
         "GIT_AUTHOR_NAME": "Your Name",
         "GIT_AUTHOR_EMAIL": "you@example.com"
