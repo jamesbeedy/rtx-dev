@@ -1,7 +1,7 @@
 """Base contract for worker tools."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
 
 ToolFn = Callable[[dict[str, Any], "ToolContext"], Awaitable[dict[str, Any]]]
@@ -17,6 +17,7 @@ class Tool:
 @dataclass
 class ToolContext:
     """Runtime context passed to every tool call."""
-    workspace: Any           # vllm_agent.workspace.Workspace
-    transcript: Any          # vllm_agent.transcript.Transcript
-    env: dict[str, str]      # subset of os.environ snapshotted at run start
+    workspace: Any                                # vllm_agent.workspace.Workspace
+    transcript: Any                               # vllm_agent.transcript.Transcript
+    env: dict[str, str]                           # subset of os.environ snapshotted at run start
+    env_overlay: dict[str, str] = field(default_factory=dict)  # keys merged into bash subprocess env
