@@ -221,3 +221,15 @@ def test_run_endpoint_accepts_skill_content(client, tmp_path, monkeypatch):
     assert r.status_code == 200
     sys_msg = next(m for m in captured["body"]["messages"] if m["role"] == "system")
     assert "INJECTED FROM HTTP BODY" in sys_msg["content"]
+
+
+def test_run_body_accepts_env_overlay():
+    from vllm_agent.server import RunBody
+    body = RunBody(task="noop", env_overlay={"GITHUB_TOKEN": "ghp_x_1234567"})
+    assert body.env_overlay == {"GITHUB_TOKEN": "ghp_x_1234567"}
+
+
+def test_session_start_body_accepts_env_overlay():
+    from vllm_agent.server import SessionStartBody
+    body = SessionStartBody(goal="noop", env_overlay={"GITHUB_TOKEN": "ghp_y_1234567"})
+    assert body.env_overlay == {"GITHUB_TOKEN": "ghp_y_1234567"}

@@ -42,6 +42,7 @@ class RunBody(BaseModel):
     temperature: float = 0.2
     timeout_s: int = 1800
     extra_context: list[str] | None = None
+    env_overlay: dict[str, str] | None = None
 
 
 class SessionStartBody(BaseModel):
@@ -51,6 +52,7 @@ class SessionStartBody(BaseModel):
     mode: str = "remote"
     workdir: str | None = None
     model: str | None = None
+    env_overlay: dict[str, str] | None = None
 
 
 class SessionStepBody(BaseModel):
