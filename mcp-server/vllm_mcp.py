@@ -78,6 +78,24 @@ _DDG_MIN_INTERVAL = float(os.environ.get("DDG_MIN_INTERVAL_S", "1.5"))
 VLLM_AGENT_URL = os.environ.get("VLLM_AGENT_URL", "")  # e.g. http://10.x.y.z:8088
 VLLM_AGENT_API_KEY = os.environ.get("VLLM_AGENT_API_KEY", "")
 
+# Allowlist of env vars forwarded to the worker via env_overlay (per-request).
+# Keep this list small and intentional — anything added here is sent on every
+# agent_run / agent_session_start call.
+_ENV_OVERLAY_ALLOWLIST = ("GITHUB_TOKEN", "GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL")
+
+
+def _build_env_overlay() -> dict[str, str]:
+    """Build env_overlay from the MCP server's own environment.
+    Read at call time so .mcp.json env changes apply on next dispatch
+    without restarting the MCP server (FastMCP typically reloads on host
+    restart, but reading lazily costs nothing)."""
+    out: dict[str, str] = {}
+    for key in _ENV_OVERLAY_ALLOWLIST:
+        val = os.environ.get(key)
+        if val:
+            out[key] = val
+    return out
+
 
 def _agent_headers() -> dict[str, str]:
     """Authorization header for VM-side vllm-agent calls. Empty if no key set."""
@@ -189,6 +207,7 @@ async def _agent_run_remote(req: _AgentRunRequest) -> dict[str, Any]:
         "max_iterations": req.max_iterations, "max_tokens": req.max_tokens,
         "temperature": req.temperature, "timeout_s": req.timeout_s,
         "extra_context": req.extra_context, "skill_content": req.skill_content,
+        "env_overlay": _build_env_overlay() or None,
     }
     async with httpx.AsyncClient(timeout=float(req.timeout_s + 30)) as client:
         r = await client.post(f"{VLLM_AGENT_URL}/run", json=body, headers=_agent_headers())
@@ -895,6 +914,7 @@ async def agent_run(
         workdir=workdir, out_dir=out_dir, model=model,
         max_iterations=max_iterations, max_tokens=max_tokens,
         temperature=temperature, timeout_s=timeout_s, extra_context=extra_context,
+        env_overlay=_build_env_overlay() or None,
     )
     if mode == "local":
         result = await _agent_run_local(req)
@@ -926,11 +946,13 @@ async def agent_session_start(
     if mode == "local":
         req = _AgentSessionStartRequest(goal=goal, skill=skill,
                                         skill_content=skill_content,
-                                        mode=mode, workdir=workdir, model=model)
+                                        mode=mode, workdir=workdir, model=model,
+                                        env_overlay=_build_env_overlay() or None)
         return asdict(await _ass_local(req))
     return await _http_session_start({
         "goal": goal, "skill": skill, "skill_content": skill_content,
         "mode": "remote", "workdir": workdir, "model": model,
+        "env_overlay": _build_env_overlay() or None,
     })
 
 
