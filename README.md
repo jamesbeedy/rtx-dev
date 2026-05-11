@@ -116,6 +116,22 @@ unchanged. TLS termination is on the roadmap as a future plan.
   the sandbox).
 - **Default**: `remote`.
 
+## GitHub PAT pass-through
+
+To let the remote worker run `git` and `gh` commands authenticated as you,
+add these optional keys to the `env` block in `.mcp.json`:
+
+- `GITHUB_TOKEN` — a fine-grained or classic PAT with the scopes you need
+  (typically `repo`).
+- `GIT_AUTHOR_NAME` / `GIT_AUTHOR_EMAIL` — used by `git commit` when no local
+  `user.name` / `user.email` is configured.
+
+The MCP server reads these from its own environment and forwards them on every
+agent dispatch as an `env_overlay` field. The vllm-agent worker exports the
+overlay into the `bash` subprocess environment only — nothing is written to
+the VM. The transcript writer redacts the token from JSONL records to
+prevent accidental disclosure.
+
 ## Skills
 
 `agent_run(skill="superpowers:test-driven-development", task="...")` loads the

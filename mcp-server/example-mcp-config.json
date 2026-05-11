@@ -10,7 +10,10 @@
       "env": {
         "VLLM_BASE_URL": "http://192.168.9.150:8000",
         "VLLM_MODEL": "QuantTrio/Qwen3-Coder-30B-A3B-Instruct-AWQ",
-        "DDG_MIN_INTERVAL_S": "1.5"
+        "DDG_MIN_INTERVAL_S": "1.5",
+        "GITHUB_TOKEN": "ghp_replace_with_your_personal_access_token",
+        "GIT_AUTHOR_NAME": "Your Name",
+        "GIT_AUTHOR_EMAIL": "you@example.com"
       }
     }
   }
