@@ -64,3 +64,32 @@ async def test_bash_timeout(ctx_remote):
     out = await bash_tool.execute(
         {"command": "sleep 5", "timeout_s": 1}, ctx_remote)
     assert "timeout" in out.get("error", "").lower() or out["exit_code"] != 0
+
+
+async def test_bash_overlay_env_visible(tmp_path):
+    ws = Workspace.resolve(str(tmp_path))
+    ctx = ToolContext(
+        workspace=ws,
+        transcript=Transcript(tmp_path / "t.jsonl"),
+        env={"VLLM_AGENT_MODE": "remote"},
+        env_overlay={"GITHUB_TOKEN": "ghp_test_value_1234"},
+    )
+    out = await bash_tool.execute(
+        {"command": "echo token=$GITHUB_TOKEN"}, ctx)
+    assert out["exit_code"] == 0
+    assert "token=ghp_test_value_1234" in out["stdout"]
+
+
+async def test_bash_overlay_overrides_existing_env(tmp_path, monkeypatch):
+    monkeypatch.setenv("MY_OVERRIDE_VAR", "from_parent")
+    ws = Workspace.resolve(str(tmp_path))
+    ctx = ToolContext(
+        workspace=ws,
+        transcript=Transcript(tmp_path / "t.jsonl"),
+        env={"VLLM_AGENT_MODE": "remote"},
+        env_overlay={"MY_OVERRIDE_VAR": "from_overlay"},
+    )
+    out = await bash_tool.execute(
+        {"command": "echo $MY_OVERRIDE_VAR"}, ctx)
+    assert "from_overlay" in out["stdout"]
+    assert "from_parent" not in out["stdout"]

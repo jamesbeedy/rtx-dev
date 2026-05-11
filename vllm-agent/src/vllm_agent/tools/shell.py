@@ -8,6 +8,7 @@ from . import Tool, ToolContext, register
 
 
 async def _bash(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
+    import os
     command = args.get("command", "")
     cwd = args.get("cwd") or str(ctx.workspace.root)
     timeout_s = float(args.get("timeout_s", 60))
@@ -17,11 +18,15 @@ async def _bash(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
         return {"error": "Local-mode bash is disabled. Set VLLM_AGENT_LOCAL_BASH=1 "
                          "in the agent environment to enable it."}
 
+    # Inherit parent env, then apply per-run overlay (e.g. GITHUB_TOKEN).
+    subproc_env = {**os.environ, **ctx.env_overlay}
+
     proc = await asyncio.create_subprocess_shell(
         command,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         cwd=cwd,
+        env=subproc_env,
     )
     try:
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout_s)
