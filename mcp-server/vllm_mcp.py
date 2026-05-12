@@ -84,6 +84,14 @@ VLLM_AGENT_API_KEY = os.environ.get("VLLM_AGENT_API_KEY", "")
 # agent_run / agent_session_start call.
 _ENV_OVERLAY_ALLOWLIST = ("GITHUB_TOKEN", "GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL")
 
+# Any env var with this prefix is auto-forwarded to the worker. Lets users
+# pass secrets to MCP subprocesses (option 2 / 3 in docs/mcp-tools.md) by
+# setting e.g. `MCP_SLACK_TOKEN` in the front MCP's env block, then
+# referencing `${MCP_SLACK_TOKEN}` from a server's `env` map — or letting
+# the MCP subprocess inherit the var by name when it already matches what
+# the upstream tool expects.
+_ENV_OVERLAY_PREFIXES = ("MCP_",)
+
 
 def _build_env_overlay() -> dict[str, str]:
     """Build env_overlay from the MCP server's own environment.
@@ -95,7 +103,48 @@ def _build_env_overlay() -> dict[str, str]:
         val = os.environ.get(key)
         if val:
             out[key] = val
+    for key, val in os.environ.items():
+        if not val:
+            continue
+        if any(key.startswith(p) for p in _ENV_OVERLAY_PREFIXES):
+            out[key] = val
     return out
+
+
+def _resolve_mcp_config(
+    path: str | None,
+    inline_json: str | None,
+    *,
+    inline_for_remote: bool,
+) -> tuple[str | None, str | None]:
+    """Pick MCP config to forward to the worker.
+
+    Priority: explicit args → env VLLM_AGENT_MCP_CONFIG_JSON → env
+    VLLM_AGENT_MCP_CONFIG (path). Remote mode can't read host paths, so when
+    `inline_for_remote=True` a path is read once and shipped as inline JSON.
+    Returns (resolved_path, resolved_json); at most one is non-None.
+    """
+    if inline_json:
+        return (None, inline_json)
+    if path:
+        if inline_for_remote:
+            try:
+                return (None, Path(path).read_text())
+            except OSError:
+                return (path, None)
+        return (path, None)
+    env_inline = os.environ.get("VLLM_AGENT_MCP_CONFIG_JSON")
+    if env_inline:
+        return (None, env_inline)
+    env_path = os.environ.get("VLLM_AGENT_MCP_CONFIG")
+    if env_path:
+        if inline_for_remote:
+            try:
+                return (None, Path(env_path).read_text())
+            except OSError:
+                return (env_path, None)
+        return (env_path, None)
+    return (None, None)
 
 
 def _agent_headers() -> dict[str, str]:
@@ -230,6 +279,8 @@ async def _agent_run_remote(req: _AgentRunRequest) -> dict[str, Any]:
         "temperature": req.temperature, "timeout_s": req.timeout_s,
         "extra_context": req.extra_context, "skill_content": req.skill_content,
         "env_overlay": _build_env_overlay() or None,
+        "mcp_config_path": getattr(req, "mcp_config_path", None),
+        "mcp_config_json": getattr(req, "mcp_config_json", None),
     }
     return await _http_agent("POST", "/run", body=body, timeout=float(req.timeout_s + 30))
 
@@ -940,6 +991,8 @@ async def agent_run(
     temperature: float = 0.2,
     timeout_s: int = 1800,
     extra_context: list[str] | None = None,
+    mcp_config_path: str | None = None,
+    mcp_config_json: str | None = None,
 ) -> dict[str, Any]:
     """Dispatch a coding-agent task to the vllm-rtx5090 backend.
 
@@ -979,12 +1032,16 @@ async def agent_run(
             skill_content = _SkillLoader().load_skill(skill)
         except _SkillNotFound as exc:
             return {"status": "error", "error": str(exc)}
+    mcp_path, mcp_json = _resolve_mcp_config(
+        mcp_config_path, mcp_config_json, inline_for_remote=(mode != "local")
+    )
     req = _AgentRunRequest(
         task=task, skill=skill, skill_content=skill_content, mode=mode,
         workdir=workdir, out_dir=out_dir, model=model,
         max_iterations=max_iterations, max_tokens=max_tokens,
         temperature=temperature, timeout_s=timeout_s, extra_context=extra_context,
         env_overlay=_build_env_overlay() or None,
+        mcp_config_path=mcp_path, mcp_config_json=mcp_json,
     )
     if mode == "local":
         result = await _agent_run_local(req)
@@ -1005,6 +1062,8 @@ async def agent_session_start(
     mode: str = "remote",
     workdir: str | None = None,
     model: str | None = None,
+    mcp_config_path: str | None = None,
+    mcp_config_json: str | None = None,
 ) -> dict[str, Any]:
     """Start a long-running agent session. Returns: {session_id, out_dir, status}.
 
@@ -1018,16 +1077,23 @@ async def agent_session_start(
             skill_content = _SkillLoader().load_skill(skill)
         except _SkillNotFound as exc:
             return {"status": "error", "error": str(exc)}
+    mcp_path, mcp_json = _resolve_mcp_config(
+        mcp_config_path, mcp_config_json, inline_for_remote=(mode != "local")
+    )
     if mode == "local":
         req = _AgentSessionStartRequest(goal=goal, skill=skill,
                                         skill_content=skill_content,
                                         mode=mode, workdir=workdir, model=model,
-                                        env_overlay=_build_env_overlay() or None)
+                                        env_overlay=_build_env_overlay() or None,
+                                        mcp_config_path=mcp_path,
+                                        mcp_config_json=mcp_json)
         return asdict(await _ass_local(req))
     return await _http_session_start({
         "goal": goal, "skill": skill, "skill_content": skill_content,
         "mode": "remote", "workdir": workdir, "model": model,
         "env_overlay": _build_env_overlay() or None,
+        "mcp_config_path": mcp_path,
+        "mcp_config_json": mcp_json,
     })
 
 

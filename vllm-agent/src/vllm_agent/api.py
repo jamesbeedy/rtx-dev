@@ -18,6 +18,7 @@ from .tools import fs as _fs                  # noqa: F401
 from .tools import shell as _shell            # noqa: F401
 from .tools import search as _search          # noqa: F401
 from .tools import finish as _finish          # noqa: F401
+from .tools.mcp_client import MCPRegistry, load_mcp_config
 from .transcript import Transcript
 from .workspace import Workspace
 
@@ -41,6 +42,8 @@ class AgentRunRequest:
     timeout_s: int = 1800
     extra_context: list[str] | None = None
     env_overlay: dict[str, str] | None = None
+    mcp_config_path: str | None = None
+    mcp_config_json: str | None = None
 
 
 @dataclass
@@ -129,6 +132,8 @@ async def agent_run(req: AgentRunRequest) -> AgentRunResult:
 
     ws = Workspace.resolve(req.workdir)
     env_overlay = dict(req.env_overlay or {})
+    mcp_config = load_mcp_config(req.mcp_config_path, req.mcp_config_json)
+    mcp_reg = MCPRegistry()
     transcript = Transcript(
         out_dir / "transcript.jsonl",
         redact_values=list(env_overlay.values()),
@@ -139,8 +144,6 @@ async def agent_run(req: AgentRunRequest) -> AgentRunResult:
         skill_content = SkillLoader().load_skill(req.skill)
     else:
         skill_content = None
-    system_prompt = build_system_prompt(skill_content, str(ws.root), req.mode)
-    user_prompt = build_user_prompt(req.task, req.extra_context)
 
     ctx = ToolContext(
         workspace=ws,
@@ -163,57 +166,69 @@ async def agent_run(req: AgentRunRequest) -> AgentRunResult:
     )
 
     before = _snapshot_files(ws.root)
-    transcript.record_message("system", system_prompt)
-    transcript.record_message("user", user_prompt)
-    msgs = [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": user_prompt},
-    ]
     import asyncio
     t0 = time.perf_counter()
     try:
-        loop_result = await asyncio.wait_for(run_loop(msgs, ctx, cfg),
-                                             timeout=float(req.timeout_s))
-    except asyncio.TimeoutError:
+        try:
+            mcp_tools = await mcp_reg.connect(mcp_config, env_source=env_overlay)
+            if mcp_reg.redact_values:
+                transcript.redact_values.extend(mcp_reg.redact_values)
+            if mcp_tools:
+                cfg.tools = {**WORKER_TOOLS, **mcp_tools}
+            system_prompt = build_system_prompt(
+                skill_content, str(ws.root), req.mode, mcp_tools=mcp_tools or None,
+            )
+            user_prompt = build_user_prompt(req.task, req.extra_context)
+            transcript.record_message("system", system_prompt)
+            transcript.record_message("user", user_prompt)
+            msgs = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ]
+            loop_result = await asyncio.wait_for(run_loop(msgs, ctx, cfg),
+                                                 timeout=float(req.timeout_s))
+        except asyncio.TimeoutError:
+            duration = time.perf_counter() - t0
+            files_changed = _files_changed(before, ws.root)
+            (out_dir / "files_changed.txt").write_text(
+                "\n".join(files_changed) + ("\n" if files_changed else ""))
+            summary_path = out_dir / "summary.md"
+            if not summary_path.exists():
+                summary_path.write_text("(timed out before finish)")
+            diff_path = _capture_diff(ws.root, out_dir)
+            return AgentRunResult(
+                run_id=run_id, out_dir=str(out_dir), summary_path=str(summary_path),
+                files_changed=files_changed, diff_path=diff_path,
+                iterations=0, duration_s=round(duration, 2),
+                status="timeout", error=f"agent_run exceeded timeout_s={req.timeout_s}",
+                search_log=_extract_search_log(out_dir / "transcript.jsonl"),
+            )
         duration = time.perf_counter() - t0
+
         files_changed = _files_changed(before, ws.root)
-        (out_dir / "files_changed.txt").write_text(
-            "\n".join(files_changed) + ("\n" if files_changed else ""))
+        (out_dir / "files_changed.txt").write_text("\n".join(files_changed) + ("\n" if files_changed else ""))
+
         summary_path = out_dir / "summary.md"
         if not summary_path.exists():
-            summary_path.write_text("(timed out before finish)")
+            # Worker didn't call finish() — synthesize a placeholder.
+            body = loop_result.final_message_content or "(no final summary; worker did not call finish())"
+            summary_path.write_text(body)
+
         diff_path = _capture_diff(ws.root, out_dir)
         return AgentRunResult(
-            run_id=run_id, out_dir=str(out_dir), summary_path=str(summary_path),
-            files_changed=files_changed, diff_path=diff_path,
-            iterations=0, duration_s=round(duration, 2),
-            status="timeout", error=f"agent_run exceeded timeout_s={req.timeout_s}",
+            run_id=run_id,
+            out_dir=str(out_dir),
+            summary_path=str(summary_path),
+            files_changed=files_changed,
+            diff_path=diff_path,
+            iterations=loop_result.iterations,
+            duration_s=round(duration, 2),
+            status=loop_result.status,
+            error=loop_result.error,
             search_log=_extract_search_log(out_dir / "transcript.jsonl"),
         )
-    duration = time.perf_counter() - t0
-
-    files_changed = _files_changed(before, ws.root)
-    (out_dir / "files_changed.txt").write_text("\n".join(files_changed) + ("\n" if files_changed else ""))
-
-    summary_path = out_dir / "summary.md"
-    if not summary_path.exists():
-        # Worker didn't call finish() — synthesize a placeholder.
-        body = loop_result.final_message_content or "(no final summary; worker did not call finish())"
-        summary_path.write_text(body)
-
-    diff_path = _capture_diff(ws.root, out_dir)
-    return AgentRunResult(
-        run_id=run_id,
-        out_dir=str(out_dir),
-        summary_path=str(summary_path),
-        files_changed=files_changed,
-        diff_path=diff_path,
-        iterations=loop_result.iterations,
-        duration_s=round(duration, 2),
-        status=loop_result.status,
-        error=loop_result.error,
-        search_log=_extract_search_log(out_dir / "transcript.jsonl"),
-    )
+    finally:
+        await mcp_reg.aclose()
 
 
 # ---- session API ------------------------------------------------------------
@@ -235,6 +250,8 @@ class AgentSessionStartRequest:
     workdir: str | None = None
     model: str | None = None
     env_overlay: dict[str, str] | None = None
+    mcp_config_path: str | None = None
+    mcp_config_json: str | None = None
 
 
 @dataclass
@@ -255,6 +272,8 @@ async def agent_session_start(req: AgentSessionStartRequest) -> AgentSessionStar
         workdir=str(ws.root),
         model=req.model,
         env_overlay=req.env_overlay,
+        mcp_config_path=req.mcp_config_path,
+        mcp_config_json=req.mcp_config_json,
     )
     return AgentSessionStartResult(
         session_id=s.session_id,
@@ -303,20 +322,6 @@ async def agent_session_step(
         skill_content = SkillLoader().load_skill(s.skill)
     else:
         skill_content = None
-    system_prompt = build_system_prompt(skill_content, str(ws.root), s.mode)
-    user_prompt = build_user_prompt(s.goal, None)
-
-    msgs = store.load_messages(session_id)
-    if not msgs:
-        msgs = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ]
-        for m in msgs:
-            store.append_message(session_id, m)
-    if nudge:
-        msgs.append({"role": "user", "content": nudge})
-        store.append_message(session_id, {"role": "user", "content": nudge})
 
     ctx = ToolContext(
         workspace=ws,
@@ -338,7 +343,37 @@ async def agent_session_step(
     )
 
     before = _snapshot_files(ws.root)
-    loop_result = await run_loop(msgs, ctx, cfg)
+    mcp_reg = MCPRegistry()
+    mcp_config = load_mcp_config(
+        getattr(s, "mcp_config_path", None),
+        getattr(s, "mcp_config_json", None),
+    )
+    try:
+        mcp_tools = await mcp_reg.connect(mcp_config, env_source=env_overlay)
+        if mcp_reg.redact_values:
+            transcript.redact_values.extend(mcp_reg.redact_values)
+        if mcp_tools:
+            cfg.tools = {**WORKER_TOOLS, **mcp_tools}
+        system_prompt = build_system_prompt(
+            skill_content, str(ws.root), s.mode, mcp_tools=mcp_tools or None,
+        )
+        user_prompt = build_user_prompt(s.goal, None)
+
+        msgs = store.load_messages(session_id)
+        if not msgs:
+            msgs = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ]
+            for m in msgs:
+                store.append_message(session_id, m)
+        if nudge:
+            msgs.append({"role": "user", "content": nudge})
+            store.append_message(session_id, {"role": "user", "content": nudge})
+
+        loop_result = await run_loop(msgs, ctx, cfg)
+    finally:
+        await mcp_reg.aclose()
     files_changed = _files_changed(before, ws.root)
 
     # Persist new messages produced this step.

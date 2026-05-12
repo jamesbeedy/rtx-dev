@@ -22,7 +22,7 @@ def _strip_fences(text: str) -> str:
         text = m.group(1)
     return text.strip()
 
-from .tools import WORKER_TOOLS, ToolContext
+from .tools import WORKER_TOOLS, Tool, ToolContext
 
 
 # Per-tool-result cap on what lands back in the context. Larger results are
@@ -54,6 +54,10 @@ class LoopConfig:
     api_key: str | None = None
     request_timeout_s: float = 600.0
     tools_subset: list[str] | None = None
+    # Tool registry for this run. When None, falls back to the global
+    # WORKER_TOOLS (built-ins only). Pass a merged dict to layer MCP tools
+    # on top of the built-ins for a single run.
+    tools: dict[str, Tool] | None = None
 
 
 @dataclass
@@ -121,10 +125,14 @@ def _vllm_headers(api_key: str | None) -> dict[str, str]:
     return h
 
 
-def _tools_schema(subset: list[str] | None = None) -> list[dict[str, Any]]:
+def _tools_schema(
+    registry: dict[str, Tool] | None = None,
+    subset: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    reg = registry if registry is not None else WORKER_TOOLS
     if subset is None:
-        return [t.schema for t in WORKER_TOOLS.values()]
-    return [t.schema for name, t in WORKER_TOOLS.items() if name in subset]
+        return [t.schema for t in reg.values()]
+    return [t.schema for name, t in reg.items() if name in subset]
 
 
 async def run_loop(
@@ -138,9 +146,10 @@ async def run_loop(
     final_content: str | None = None
 
     out_dir = Path(ctx.env.get("VLLM_AGENT_OUT_DIR") or ".")
+    registry = cfg.tools if cfg.tools is not None else WORKER_TOOLS
     # The tools schema is sent on every request and counts against the same
     # window as the messages. Pre-compute its char cost once.
-    tools_schema_chars = len(json.dumps(_tools_schema(cfg.tools_subset),
+    tools_schema_chars = len(json.dumps(_tools_schema(registry, cfg.tools_subset),
                                         ensure_ascii=False))
     completion_chars = cfg.max_tokens * CHARS_PER_TOKEN
     usable = CONTEXT_WINDOW_CHARS - completion_chars - tools_schema_chars
@@ -178,7 +187,7 @@ async def run_loop(
                         json={
                             "model": cfg.vllm_model,
                             "messages": msgs,
-                            "tools": _tools_schema(cfg.tools_subset),
+                            "tools": _tools_schema(registry, cfg.tools_subset),
                             "tool_choice": "auto",
                             "max_tokens": cfg.max_tokens,
                             "temperature": cfg.temperature,
@@ -239,7 +248,7 @@ async def run_loop(
                         args = {}
                 tool_counts[name] += 1
                 tool_call_seq += 1
-                tool = WORKER_TOOLS.get(name)
+                tool = registry.get(name)
                 if tool is None:
                     result = {"error": f"unknown tool: {name}"}
                 else:

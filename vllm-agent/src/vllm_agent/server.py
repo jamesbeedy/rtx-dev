@@ -43,6 +43,8 @@ class RunBody(BaseModel):
     timeout_s: int = 1800
     extra_context: list[str] | None = None
     env_overlay: dict[str, str] | None = None
+    mcp_config_path: str | None = None
+    mcp_config_json: str | None = None
 
 
 class SessionStartBody(BaseModel):
@@ -53,6 +55,8 @@ class SessionStartBody(BaseModel):
     workdir: str | None = None
     model: str | None = None
     env_overlay: dict[str, str] | None = None
+    mcp_config_path: str | None = None
+    mcp_config_json: str | None = None
 
 
 class SessionStepBody(BaseModel):

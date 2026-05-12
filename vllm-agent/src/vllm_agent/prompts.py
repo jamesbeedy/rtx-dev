@@ -75,13 +75,40 @@ Summary discipline:
 """
 
 
+def _format_mcp_block(mcp_tools: dict | None, max_chars: int = 2_000) -> str:
+    """Render a short index of MCP tools for the system prompt.
+
+    Each entry: `mcp__<server>__<name>: <one-line description>`. Truncate
+    descriptions and cap the whole block so a misbehaving server can't blow
+    out the prompt budget.
+    """
+    if not mcp_tools:
+        return ""
+    lines = ["", "Additional MCP tools available (call by exact name):"]
+    used = sum(len(l) + 1 for l in lines)
+    for name, tool in mcp_tools.items():
+        desc = (tool.schema.get("function") or {}).get("description") or ""
+        desc = desc.replace("\n", " ").strip()
+        if len(desc) > 120:
+            desc = desc[:117] + "..."
+        line = f"  - {name}: {desc}" if desc else f"  - {name}"
+        if used + len(line) + 1 > max_chars:
+            lines.append(f"  - ...(+{len(mcp_tools) - (len(lines) - 2)} more, truncated)")
+            break
+        lines.append(line)
+        used += len(line) + 1
+    return "\n".join(lines) + "\n"
+
+
 def build_system_prompt(
     skill_content: str | None,
     workdir: str,
     mode: str,
     budget_chars: int = DEFAULT_BUDGET_CHARS,
+    mcp_tools: dict | None = None,
 ) -> str:
     body = _WORKER_TAIL.format(workdir=workdir, mode=mode)
+    body += _format_mcp_block(mcp_tools)
     if skill_content:
         body = skill_content.rstrip() + "\n\n" + body
     if len(body) > budget_chars:

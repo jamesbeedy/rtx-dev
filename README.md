@@ -79,3 +79,4 @@ Restart Claude Code to load the MCP server, then verify:
 - [Architecture](docs/architecture.md) — components, URL layout, repo structure
 - [Provisioning](docs/provisioning.md) — launching the LXD VM with GPU passthrough
 - [MCP tools reference](docs/mcp-tools.md) — all tools, modes, output discipline, skills
+- [Worker-side MCP servers](docs/worker-mcp-clients.md) — give the worker access to external MCP servers (GitHub, Slack, filesystem, custom)

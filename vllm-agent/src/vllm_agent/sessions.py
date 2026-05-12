@@ -32,6 +32,8 @@ class Session:
     iterations_total: int = 0
     files_changed_total: list[str] = field(default_factory=list)
     env_overlay: dict[str, str] = field(default_factory=dict)
+    mcp_config_path: str | None = None
+    mcp_config_json: str | None = None
 
 
 @dataclass
@@ -59,6 +61,8 @@ class SessionStore:
         workdir: str,
         model: str | None,
         env_overlay: dict[str, str] | None = None,
+        mcp_config_path: str | None = None,
+        mcp_config_json: str | None = None,
     ) -> Session:
         sid = uuid.uuid4().hex[:12]
         now = time.time()
@@ -74,6 +78,8 @@ class SessionStore:
             started_at=now,
             last_activity_at=now,
             env_overlay=dict(env_overlay or {}),
+            mcp_config_path=mcp_config_path,
+            mcp_config_json=mcp_config_json,
         )
         d = self._dir(sid)
         d.mkdir(parents=True, exist_ok=True)
