@@ -25,6 +25,10 @@
 | `agent_session_status` | Get session state |
 | `agent_session_stop` | Stop a session |
 | `agent_run_artifacts` | Read back artifacts (summary, files changed, transcript) of a completed run |
+| `should_dispatch` | Local heuristic: recommend `local` (inline) or `remote` (dispatch) for a given task. No model call. |
+| `agent_run_batch` | Dispatch N `agent_run` calls in parallel with a concurrency cap. Each item is the `agent_run` kwargs dict. |
+| `agent_session_wait` | Poll `agent_session_status` until the session reaches a terminal state (or custom set) or `timeout_s` elapses. |
+| `agent_run_recent` | List recent `agent_run` records from `~/.cache/vllm-mcp/recent.jsonl`. Optional substring grep. |
 
 ## Mode Selection
 
@@ -54,6 +58,64 @@ Everything is written to `out_dir`:
 - `diff.patch` — git diff (remote mode only)
 
 Claude gets only paths + metadata. To see actual content, `Read` the file directly.
+
+### Pre-dispatch git snapshot
+
+Pass `snapshot_before=true` to `agent_run` to record the workdir's HEAD sha
+and full unstaged diff **before** the worker starts. Snapshot is written to
+`<out_dir>/pre_snapshot.json` and the run result gains a `pre_snapshot`
+field:
+
+```json
+"pre_snapshot": {"head": "abc123...", "dirty_before": true, "path": "<out_dir>/pre_snapshot.json"}
+```
+
+Only works when the workdir is a git repo **on the orchestrator host**
+(typically `mode="local"` or a host path that matches the VM mount).
+For `mode="remote"` against a VM-only workdir the snapshot silently
+no-ops. Worker-side post-run diff (`diff.patch`) still captured in both
+cases.
+
+### Recent runs cache
+
+Every `agent_run` records a row in `~/.cache/vllm-mcp/recent.jsonl`
+(override via `VLLM_MCP_CACHE_DIR`, cap via `VLLM_MCP_RECENT_MAX`,
+default 200). Fields: `run_id`, `out_dir`, `task_head` (first 200
+chars), `skill`, `mode`, `status`, `iterations`, `duration_s`, `ts`.
+Use `agent_run_recent(limit=20, grep="...")` to query.
+
+### Triage before dispatch
+
+```
+should_dispatch(task="rename foo to bar across the repo")
+→ {"recommendation": "local", "reason": "...mechanical-edit keyword...", ...}
+```
+
+Pure heuristic, no model call. Same logic powers the `agent_run`
+mechanical-edit guardrail.
+
+### Parallel fan-out
+
+```
+agent_run_batch(tasks=[
+  {"task": "audit module A", "skill": "..."},
+  {"task": "audit module B", "skill": "..."},
+  {"task": "audit module C", "skill": "..."},
+], max_concurrency=3)
+```
+
+Returns `{results: [<agent_run result>, ...], count, errors}`. Per-item
+errors don't abort the batch.
+
+### Waiting on long sessions
+
+```
+agent_session_wait(session_id="...", timeout_s=900, poll_interval_s=10)
+```
+
+Polls `agent_session_status` until status ∈ {`completed`, `stopped`,
+`errored`} or timeout. Override the terminal set with
+`until_statuses=[...]` to wait for a specific transition.
 
 ## GitHub PAT Pass-through
 

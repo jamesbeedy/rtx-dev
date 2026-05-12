@@ -9,7 +9,7 @@ non-negotiable:
   2. Generated content is always written to disk and only metadata returns.
      Claude's context never accumulates raw model output.
 
-Tool surface (14 total):
+Tool surface:
 
   Utility:
     - health()              probe the vLLM endpoint
@@ -33,6 +33,12 @@ Tool surface (14 total):
     - agent_session_stop(session_id)    stop a session
     - agent_run_artifacts(out_dir, ...) read back artifacts of a completed run
 
+  Local helpers (no model call, no remote round-trip):
+    - should_dispatch(task)            triage: local vs remote recommendation
+    - agent_run_batch(tasks, ...)      parallel fan-out of N agent_run calls
+    - agent_session_wait(session_id)   poll status until terminal
+    - agent_run_recent(limit, grep)    list cached recent runs
+
 Environment:
     VLLM_BASE_URL        default http://127.0.0.1:8000
     VLLM_MODEL           default model id
@@ -45,6 +51,7 @@ Environment:
 from __future__ import annotations
 
 import ast
+import asyncio
 import json
 import os
 import re
@@ -91,6 +98,146 @@ _ENV_OVERLAY_ALLOWLIST = ("GITHUB_TOKEN", "GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL")
 # the MCP subprocess inherit the var by name when it already matches what
 # the upstream tool expects.
 _ENV_OVERLAY_PREFIXES = ("MCP_",)
+
+# Local artifact cache — keeps a rolling record of recent runs so the
+# orchestrator can grep/list past runs without re-reading every out_dir.
+# Cap is a hard ceiling on lines; older entries get rotated out.
+_RECENT_CACHE_DIR = Path(os.environ.get(
+    "VLLM_MCP_CACHE_DIR",
+    str(Path.home() / ".cache" / "vllm-mcp"),
+))
+_RECENT_CACHE_PATH = _RECENT_CACHE_DIR / "recent.jsonl"
+_RECENT_CACHE_MAX_LINES = int(os.environ.get("VLLM_MCP_RECENT_MAX", "200"))
+
+
+def _record_recent(record: dict[str, Any]) -> None:
+    """Append a run record to the ring buffer. Best-effort — never raises."""
+    try:
+        _RECENT_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        lines: list[str] = []
+        if _RECENT_CACHE_PATH.exists():
+            lines = _RECENT_CACHE_PATH.read_text().splitlines()
+        lines.append(json.dumps(record, ensure_ascii=False))
+        if len(lines) > _RECENT_CACHE_MAX_LINES:
+            lines = lines[-_RECENT_CACHE_MAX_LINES:]
+        _RECENT_CACHE_PATH.write_text("\n".join(lines) + "\n")
+    except OSError:
+        pass
+
+
+def _load_recent(limit: int = 50, grep: str | None = None) -> list[dict[str, Any]]:
+    if not _RECENT_CACHE_PATH.exists():
+        return []
+    out: list[dict[str, Any]] = []
+    for line in _RECENT_CACHE_PATH.read_text().splitlines():
+        if not line.strip():
+            continue
+        try:
+            rec = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if grep:
+            blob = json.dumps(rec, ensure_ascii=False).lower()
+            if grep.lower() not in blob:
+                continue
+        out.append(rec)
+    return out[-limit:]
+
+
+def _local_git_snapshot(workdir: str | None) -> dict[str, Any] | None:
+    """If `workdir` exists locally and is a git repo, return its current
+    HEAD sha + unstaged diff. Used by `snapshot_before` so the caller can
+    diff/rollback after a dispatch. Returns None if not applicable
+    (path missing, not a repo, git unavailable)."""
+    if not workdir:
+        return None
+    try:
+        p = Path(workdir).expanduser().resolve()
+    except (OSError, RuntimeError):
+        return None
+    if not (p / ".git").is_dir():
+        return None
+    import subprocess
+    try:
+        head = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=str(p),
+            capture_output=True, text=True, timeout=10,
+        )
+        status = subprocess.run(
+            ["git", "status", "--porcelain"], cwd=str(p),
+            capture_output=True, text=True, timeout=10,
+        )
+        diff = subprocess.run(
+            ["git", "diff", "--no-color"], cwd=str(p),
+            capture_output=True, text=True, timeout=30,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return None
+    return {
+        "workdir": str(p),
+        "head": head.stdout.strip(),
+        "dirty": bool(status.stdout.strip()),
+        "status": status.stdout,
+        "diff": diff.stdout,
+    }
+
+
+# Keyword sets for `should_dispatch` heuristic. Order matters for tie-breaks
+# but each match adds independently — first matching family wins on score
+# ties.
+_LOCAL_HINTS = (
+    "rename ", "replace ", "typo", "find-and-replace", "find and replace",
+    "global replace", "swap ", "s/", "sed ", "substitute ",
+    "small fix", "one-liner", "trivial", "mechanical",
+)
+_REMOTE_HINTS = (
+    "implement", "build ", "scaffold", "refactor", "audit", "review",
+    "design ", "test", "fix the bug", "investigate", "explore",
+    "across the codebase", "every file", "all files", "whole repo",
+    "rewrite", "migrate ", "port ", "translate ",
+)
+
+
+def _score_task(task: str) -> dict[str, Any]:
+    t = task.strip().lower()
+    n = len(t)
+    local_hits = [h for h in _LOCAL_HINTS if h in t]
+    remote_hits = [h for h in _REMOTE_HINTS if h in t]
+    if local_hits and n <= _GUARDRAIL_TASK_CHAR_LIMIT and not remote_hits:
+        rec = "local"
+        reason = (
+            f"task is short ({n} chars) and matches mechanical-edit keyword "
+            f"{local_hits[0]!r}. `fast_edit` or inline edit avoids the model "
+            "round-trip."
+        )
+    elif remote_hits:
+        rec = "remote"
+        reason = (
+            f"task matches dispatch keyword {remote_hits[0]!r}; benefits from "
+            "VM-side bash + iteration."
+        )
+    elif n > 400:
+        rec = "remote"
+        reason = (
+            f"task is long ({n} chars) — likely multi-step. Dispatch is "
+            "cheaper than orchestrating turn-by-turn from main context."
+        )
+    elif n < 80 and not remote_hits:
+        rec = "local"
+        reason = (
+            f"task is very short ({n} chars) with no dispatch keywords. Do "
+            "inline."
+        )
+    else:
+        rec = "remote"
+        reason = "ambiguous; default to remote because VM has full bash."
+    return {
+        "recommendation": rec,
+        "reason": reason,
+        "task_chars": n,
+        "local_hints": local_hits,
+        "remote_hints": remote_hits,
+    }
 
 
 def _build_env_overlay() -> dict[str, str]:
@@ -993,6 +1140,7 @@ async def agent_run(
     extra_context: list[str] | None = None,
     mcp_config_path: str | None = None,
     mcp_config_json: str | None = None,
+    snapshot_before: bool = False,
 ) -> dict[str, Any]:
     """Dispatch a coding-agent task to the vllm-rtx5090 backend.
 
@@ -1043,11 +1191,41 @@ async def agent_run(
         env_overlay=_build_env_overlay() or None,
         mcp_config_path=mcp_path, mcp_config_json=mcp_json,
     )
+    snapshot: dict[str, Any] | None = None
+    if snapshot_before:
+        snapshot = _local_git_snapshot(workdir)
     if mode == "local":
         result = await _agent_run_local(req)
-        return asdict(result)
+        out = asdict(result)
     else:
-        return await _agent_run_remote(req)
+        out = await _agent_run_remote(req)
+    if snapshot is not None:
+        out["pre_snapshot"] = {
+            "head": snapshot["head"],
+            "dirty_before": snapshot["dirty"],
+        }
+        # Persist full diff next to run artifacts so it's not lost.
+        try:
+            run_out = out.get("out_dir")
+            if run_out:
+                snap_path = Path(run_out) / "pre_snapshot.json"
+                snap_path.parent.mkdir(parents=True, exist_ok=True)
+                snap_path.write_text(json.dumps(snapshot, ensure_ascii=False))
+                out["pre_snapshot"]["path"] = str(snap_path)
+        except OSError:
+            pass
+    _record_recent({
+        "run_id": out.get("run_id"),
+        "out_dir": out.get("out_dir"),
+        "task_head": task[:200],
+        "skill": skill,
+        "mode": mode,
+        "status": out.get("status"),
+        "iterations": out.get("iterations"),
+        "duration_s": out.get("duration_s"),
+        "ts": time.time(),
+    })
+    return out
 
 
 @mcp.tool(annotations=ToolAnnotations(
@@ -1279,6 +1457,146 @@ async def list_skills() -> list[dict[str, Any]]:
     Skill names are passed to `agent_run(skill=...)` and `agent_session_start(skill=...)`.
     """
     return _SkillLoader().list_skills()
+
+
+# =============================================================================
+# Tools: local helpers (triage, fan-out, wait, recent)
+# =============================================================================
+
+@mcp.tool(annotations=ToolAnnotations(
+    readOnlyHint=True,
+    destructiveHint=False,
+    idempotentHint=True,
+    openWorldHint=False
+))
+async def should_dispatch(task: str) -> dict[str, Any]:
+    """Local triage: should this task be dispatched to the vllm-agent worker
+    or done inline by the orchestrator?
+
+    Returns: {recommendation: 'local'|'remote', reason, task_chars,
+              local_hints, remote_hints}.
+
+    Pure heuristic — no model call, no network. Use it before `agent_run` to
+    skip dispatch on tiny / mechanical tasks (typo, rename, sed-style edits)
+    that aren't worth the round-trip. The same heuristic powers
+    `agent_run`'s mechanical-edit guardrail.
+    """
+    return _score_task(task)
+
+
+@mcp.tool(annotations=ToolAnnotations(
+    readOnlyHint=False,
+    destructiveHint=True,
+    idempotentHint=False,
+    openWorldHint=True
+))
+async def agent_run_batch(
+    tasks: list[dict[str, Any]],
+    mode: str = "remote",
+    max_concurrency: int = 4,
+) -> dict[str, Any]:
+    """Dispatch N agent_run calls in parallel.
+
+    Each item in `tasks` is a dict accepted by `agent_run` — at minimum
+    `{"task": "..."}`. Per-item keys override the shared `mode`. Returns:
+    `{"results": [<agent_run result>, ...], "count": N, "errors": M}`.
+
+    Concurrency is capped at `max_concurrency` (default 4) to avoid
+    overloading the VM. Each result is the same shape as a single
+    `agent_run`, including `pre_snapshot` if requested.
+
+    Failures are captured per-item (status='error' with `error` field) so
+    one bad task doesn't abort the batch.
+    """
+    if not tasks:
+        return {"results": [], "count": 0, "errors": 0}
+
+    sem = asyncio.Semaphore(max(1, int(max_concurrency)))
+
+    async def _one(item: dict[str, Any]) -> dict[str, Any]:
+        async with sem:
+            kwargs = dict(item)
+            kwargs.setdefault("mode", mode)
+            task = kwargs.pop("task", None)
+            if not task:
+                return {"status": "error",
+                        "error": "missing 'task' field in batch item"}
+            try:
+                return await agent_run(task=task, **kwargs)
+            except Exception as e:
+                return {"status": "error",
+                        "error": f"{type(e).__name__}: {e}"}
+
+    results = await asyncio.gather(*[_one(item) for item in tasks])
+    errors = sum(1 for r in results if r.get("status") in ("error", "timeout"))
+    return {"results": results, "count": len(results), "errors": errors}
+
+
+@mcp.tool(annotations=ToolAnnotations(
+    readOnlyHint=True,
+    destructiveHint=False,
+    idempotentHint=True,
+    openWorldHint=True
+))
+async def agent_session_wait(
+    session_id: str,
+    timeout_s: int = 1800,
+    poll_interval_s: float = 5.0,
+    mode: str = "remote",
+    until_statuses: list[str] | None = None,
+) -> dict[str, Any]:
+    """Poll `agent_session_status` until the session reaches a terminal
+    state (or `until_statuses`), then return the final status payload.
+
+    Defaults: wait up to 1800s, poll every 5s, terminal = stopped /
+    completed / errored. Set `until_statuses=['running']` to wait until
+    the session leaves a given state.
+
+    Returns the final status dict plus a `waited_s` field. On timeout
+    returns the last seen status with `timed_out: True`.
+    """
+    terminal = set(until_statuses or ("completed", "stopped", "errored"))
+    deadline = time.monotonic() + max(1, int(timeout_s))
+    interval = max(0.5, float(poll_interval_s))
+    start = time.monotonic()
+    last: dict[str, Any] = {}
+    while True:
+        if mode == "local":
+            last = asdict(await _aststatus_local(session_id))
+        else:
+            last = await _http_session_status(session_id)
+        if last.get("status") in terminal:
+            last["waited_s"] = round(time.monotonic() - start, 2)
+            return last
+        if time.monotonic() >= deadline:
+            last["waited_s"] = round(time.monotonic() - start, 2)
+            last["timed_out"] = True
+            return last
+        await asyncio.sleep(interval)
+
+
+@mcp.tool(annotations=ToolAnnotations(
+    readOnlyHint=True,
+    destructiveHint=False,
+    idempotentHint=True,
+    openWorldHint=False
+))
+async def agent_run_recent(
+    limit: int = 20,
+    grep: str | None = None,
+) -> list[dict[str, Any]]:
+    """List recent agent_run records from the local cache.
+
+    Each record: `{run_id, out_dir, task_head, skill, mode, status,
+    iterations, duration_s, ts}`. `grep` does a case-insensitive substring
+    match across the whole record JSON — use it to find runs by task
+    keyword, skill name, status, etc. Newest entries last.
+
+    Cache lives at `$VLLM_MCP_CACHE_DIR/recent.jsonl` (default
+    `~/.cache/vllm-mcp/recent.jsonl`), capped at `$VLLM_MCP_RECENT_MAX`
+    lines (default 200).
+    """
+    return _load_recent(limit=max(1, int(limit)), grep=grep)
 
 
 def main() -> None:
