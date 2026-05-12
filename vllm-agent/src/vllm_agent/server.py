@@ -37,7 +37,7 @@ class RunBody(BaseModel):
     workdir: str | None = None
     out_dir: str | None = None
     model: str | None = None
-    max_iterations: int = 30
+    max_iterations: int = 12
     max_tokens: int = 4096
     temperature: float = 0.2
     timeout_s: int = 1800
@@ -58,6 +58,14 @@ class SessionStartBody(BaseModel):
 class SessionStepBody(BaseModel):
     nudge: str | None = None
     max_iterations: int = 10
+
+
+class FastEditBody(BaseModel):
+    path: str
+    old: str
+    new: str
+    replace_all: bool = False
+    workdir: str | None = None
 
 
 @app.get("/health")
@@ -112,6 +120,44 @@ async def session_stop(session_id: str) -> dict:
     except KeyError:
         raise HTTPException(404, f"unknown session: {session_id}")
     return asdict(result)
+
+
+@app.post("/fast_edit", dependencies=[Depends(require_key)])
+async def fast_edit(body: FastEditBody) -> dict:
+    """Apply a literal find/replace on a workspace file without invoking the model.
+
+    Cheap by design — no tokens, no loop, no transcript. For multi-step or
+    semantic edits, use /run with an agent skill instead.
+    """
+    from .workspace import Workspace
+    try:
+        ws = Workspace.resolve(body.workdir)
+    except (FileNotFoundError, NotADirectoryError, PermissionError) as e:
+        raise HTTPException(400, str(e))
+    full = ws.resolve_path(body.path)
+    try:
+        text = full.read_text()
+    except FileNotFoundError:
+        raise HTTPException(404, f"file not found: {full}")
+    except PermissionError as e:
+        raise HTTPException(403, str(e))
+    if body.old not in text:
+        raise HTTPException(422, f"old string not found in {full}")
+    occurrences = text.count(body.old)
+    if not body.replace_all and occurrences > 1:
+        raise HTTPException(
+            422,
+            f"old string is not unique ({occurrences} occurrences); "
+            "set replace_all=true or provide more context",
+        )
+    new_text = (text.replace(body.old, body.new) if body.replace_all
+                else text.replace(body.old, body.new, 1))
+    full.write_text(new_text)
+    return {
+        "path": str(full),
+        "replacements": occurrences if body.replace_all else 1,
+        "bytes_written": len(new_text.encode()),
+    }
 
 
 @app.get("/skills", dependencies=[Depends(require_key)])

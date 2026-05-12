@@ -58,6 +58,19 @@ async def test_read_file_offset_resumes_after_truncation(tmp_path, ctx):
     assert second["content"].startswith(f"line {first['next_offset']:06d}")
 
 
+async def test_read_file_per_path_budget(tmp_path, ctx):
+    from vllm_agent.tools.fs import READ_FILE_PER_PATH_LIMIT
+    p = tmp_path / "f.txt"
+    p.write_text("a\nb\nc\n")
+    for _ in range(READ_FILE_PER_PATH_LIMIT):
+        out = await read_file_tool.execute({"path": "f.txt"}, ctx)
+        assert "error" not in out
+    blocked = await read_file_tool.execute({"path": "f.txt"}, ctx)
+    assert "error" in blocked
+    assert "budget exhausted" in blocked["error"]
+    assert blocked["reads_so_far"] == READ_FILE_PER_PATH_LIMIT
+
+
 async def test_read_file_max_bytes_override(tmp_path, ctx):
     p = tmp_path / "big.txt"
     p.write_text("\n".join(f"line {i:06d}" for i in range(500)))

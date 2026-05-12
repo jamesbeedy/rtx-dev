@@ -1,15 +1,16 @@
 """Construct system + user prompts for the agent loop, with context budget enforcement.
 
-Rough char-to-token ratio: 4 chars/token. 32k context = 128k chars total budget.
-We reserve ~32k chars for completion + working transcript, leaving ~96k for
-system + initial user prompt. Defaults below assume that envelope.
+Char-to-token ratio for code/JSON on Qwen3 is ~3, not 4. The 32k window
+is ~96k chars total; we must leave room for tool schemas, tool results,
+and the completion. Defaults below cap the upfront cost so the worker
+starts each run with usable headroom.
 """
 from __future__ import annotations
 
 from pathlib import Path
 
-DEFAULT_BUDGET_CHARS = 96_000   # ~24k tokens for system + user prompt
-DEFAULT_CONTEXT_CHARS = 60_000  # cap for `extra_context` body
+DEFAULT_BUDGET_CHARS = 24_000   # ~8k tokens for system prompt (incl. skill)
+DEFAULT_CONTEXT_CHARS = 24_000  # ~8k tokens for `extra_context` body
 
 
 class PromptBudgetError(Exception):

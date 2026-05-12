@@ -49,6 +49,50 @@ def test_run_endpoint(client, tmp_path, monkeypatch):
     assert body["run_id"]
 
 
+def test_fast_edit_endpoint(client, tmp_path):
+    f = tmp_path / "f.txt"
+    f.write_text("foo bar baz")
+    r = client.post("/fast_edit", json={
+        "path": "f.txt", "old": "bar", "new": "BAR",
+        "workdir": str(tmp_path),
+    })
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["replacements"] == 1
+    assert f.read_text() == "foo BAR baz"
+
+
+def test_fast_edit_not_unique_422(client, tmp_path):
+    f = tmp_path / "f.txt"
+    f.write_text("x x x")
+    r = client.post("/fast_edit", json={
+        "path": "f.txt", "old": "x", "new": "y",
+        "workdir": str(tmp_path),
+    })
+    assert r.status_code == 422
+    assert f.read_text() == "x x x"
+
+
+def test_fast_edit_replace_all(client, tmp_path):
+    f = tmp_path / "f.txt"
+    f.write_text("x x x")
+    r = client.post("/fast_edit", json={
+        "path": "f.txt", "old": "x", "new": "y",
+        "replace_all": True, "workdir": str(tmp_path),
+    })
+    assert r.status_code == 200, r.text
+    assert r.json()["replacements"] == 3
+    assert f.read_text() == "y y y"
+
+
+def test_fast_edit_missing_file_404(client, tmp_path):
+    r = client.post("/fast_edit", json={
+        "path": "nope.txt", "old": "a", "new": "b",
+        "workdir": str(tmp_path),
+    })
+    assert r.status_code == 404
+
+
 def test_skills_endpoint(client):
     r = client.get("/skills")
     assert r.status_code == 200

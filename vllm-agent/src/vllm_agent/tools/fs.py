@@ -8,9 +8,14 @@ from . import Tool, ToolContext, register
 
 # ---- read_file --------------------------------------------------------------
 
-# Hard cap on returned content per call. ~4k tokens at 4 chars/token.
+# Hard cap on returned content per call. ~5k tokens at 3 chars/token.
 # Worker must use offset/limit to read further chunks of large files.
 READ_FILE_MAX_BYTES = 16_384
+
+# After this many read_file calls on a single resolved path within one run,
+# refuse further reads and steer the worker to grep instead. Prevents the
+# "walk the same file at increasing offsets until the window dies" pattern.
+READ_FILE_PER_PATH_LIMIT = 3
 
 
 def _truncate_to_bytes(lines: list[str], max_bytes: int) -> tuple[str, int]:
@@ -33,6 +38,21 @@ async def _read_file(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
     limit = args.get("limit")
     max_bytes = int(args.get("max_bytes") or READ_FILE_MAX_BYTES)
     full = ctx.workspace.resolve_path(path_arg)
+    key = str(full)
+    prior = ctx.read_counts.get(key, 0)
+    if prior >= READ_FILE_PER_PATH_LIMIT:
+        return {
+            "error": (
+                f"read_file budget exhausted for {full}: already read "
+                f"{prior} times this run. Switch strategy — use grep to "
+                "find the exact lines you need, or finish() with what you "
+                "have. Re-reading the same file at new offsets is the "
+                "single biggest cause of context exhaustion."
+            ),
+            "path": key,
+            "reads_so_far": prior,
+        }
+    ctx.read_counts[key] = prior + 1
     try:
         full_text = full.read_text()
     except FileNotFoundError:

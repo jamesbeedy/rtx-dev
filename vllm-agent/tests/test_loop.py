@@ -177,6 +177,29 @@ async def test_loop_vllm_5xx_retried_once(tmp_path):
 
 
 @respx.mock
+async def test_loop_hard_limit_bails_before_post(tmp_path, monkeypatch):
+    """If the initial messages already exceed the usable budget, the loop
+    must return context_exhausted without hitting vLLM."""
+    import vllm_agent.loop as loop_mod
+    monkeypatch.setattr(loop_mod, "CONTEXT_WINDOW_CHARS", 4_000)
+    respx.post("https://vllm.example/v1/chat/completions").mock(
+        return_value=Response(200, json=_vllm_response(content="should not run")))
+
+    ws = Workspace.resolve(str(tmp_path))
+    out_dir = tmp_path / "out"; out_dir.mkdir()
+    ctx = ToolContext(workspace=ws,
+                      transcript=Transcript(out_dir / "transcript.jsonl"),
+                      env={"VLLM_AGENT_OUT_DIR": str(out_dir)})
+    cfg = LoopConfig(vllm_base_url="https://vllm.example",
+                     vllm_model="m", max_iterations=2,
+                     max_tokens=128, temperature=0)
+    huge = "x" * 6_000
+    result = await run_loop([{"role": "user", "content": huge}], ctx, cfg)
+    assert result.status == "context_exhausted"
+    assert "context budget exceeded" in (result.error or "")
+
+
+@respx.mock
 async def test_loop_tools_subset_restricts_palette(tmp_path):
     """When tools_subset is set, only those tools are advertised to vLLM."""
     captured = {}

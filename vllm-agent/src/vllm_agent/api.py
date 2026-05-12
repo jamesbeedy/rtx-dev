@@ -35,7 +35,7 @@ class AgentRunRequest:
     workdir: str | None = None
     out_dir: str | None = None
     model: str | None = None
-    max_iterations: int = 30
+    max_iterations: int = 12
     max_tokens: int = 4096
     temperature: float = 0.2
     timeout_s: int = 1800

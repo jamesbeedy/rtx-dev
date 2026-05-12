@@ -27,21 +27,28 @@ from .tools import WORKER_TOOLS, ToolContext
 
 # Per-tool-result cap on what lands back in the context. Larger results are
 # spilled to disk; the in-context payload only carries a head + a pointer.
-TOOL_RESULT_INLINE_MAX_BYTES = 8_192
-TOOL_RESULT_HEAD_BYTES = 2_048
+TOOL_RESULT_INLINE_MAX_BYTES = 4_096
+TOOL_RESULT_HEAD_BYTES = 1_024
 
-# Context window (chars) and the fraction at which we tell the worker to wrap
-# up. 32k tokens * 4 chars/token = 131072 chars total; reserve max_tokens for
-# the next completion. We act at 80% of the remainder.
-CONTEXT_WINDOW_CHARS = 131_072
-CONTEXT_SOFT_LIMIT_FRACTION = 0.80
+# Char-per-token estimate for code/JSON workloads on Qwen3. The previous
+# 4 chars/tok ratio was a prose estimate and consistently under-counted
+# (vLLM 400'd at ~24k tokens while our budget said "fine"). 3 is closer.
+CHARS_PER_TOKEN = 3
+
+# Hard ceiling — Qwen3-Coder-30B context window in tokens.
+CONTEXT_WINDOW_TOKENS = 32_000
+CONTEXT_WINDOW_CHARS = CONTEXT_WINDOW_TOKENS * CHARS_PER_TOKEN
+
+# Tell the worker to wrap up well before the hard ceiling. 70% leaves enough
+# room for one or two more turns of tool output without overrunning.
+CONTEXT_SOFT_LIMIT_FRACTION = 0.70
 
 
 @dataclass
 class LoopConfig:
     vllm_base_url: str
     vllm_model: str
-    max_iterations: int = 30
+    max_iterations: int = 12
     max_tokens: int = 4096
     temperature: float = 0.2
     api_key: str | None = None
@@ -131,8 +138,14 @@ async def run_loop(
     final_content: str | None = None
 
     out_dir = Path(ctx.env.get("VLLM_AGENT_OUT_DIR") or ".")
-    soft_limit = int((CONTEXT_WINDOW_CHARS - cfg.max_tokens * 4) * CONTEXT_SOFT_LIMIT_FRACTION)
-    hard_limit = CONTEXT_WINDOW_CHARS - cfg.max_tokens * 4
+    # The tools schema is sent on every request and counts against the same
+    # window as the messages. Pre-compute its char cost once.
+    tools_schema_chars = len(json.dumps(_tools_schema(cfg.tools_subset),
+                                        ensure_ascii=False))
+    completion_chars = cfg.max_tokens * CHARS_PER_TOKEN
+    usable = CONTEXT_WINDOW_CHARS - completion_chars - tools_schema_chars
+    soft_limit = max(1, int(usable * CONTEXT_SOFT_LIMIT_FRACTION))
+    hard_limit = max(1, usable)
     nudged = False
     tool_call_seq = 0
 
@@ -150,7 +163,9 @@ async def run_loop(
                     status="context_exhausted",
                     tool_calls_by_name=tool_counts,
                     error=(f"context budget exceeded: {cur} chars >= "
-                           f"{hard_limit} (32k * 4 - max_tokens*4). "
+                           f"{hard_limit} (window={CONTEXT_WINDOW_TOKENS}tok, "
+                           f"completion_reserve={cfg.max_tokens}tok, "
+                           f"tools_schema={tools_schema_chars}c). "
                            "Worker did not call finish() in time."),
                 )
 

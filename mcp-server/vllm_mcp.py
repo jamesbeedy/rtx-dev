@@ -894,6 +894,31 @@ async def verify_project(
 
 
 # =============================================================================
+# Mechanical-edit guardrail
+# =============================================================================
+
+# Tasks shorter than this are very likely mechanical and not worth a model
+# round-trip. Tunable via env.
+_GUARDRAIL_TASK_CHAR_LIMIT = int(os.environ.get("VLLM_AGENT_GUARDRAIL_CHAR_LIMIT", "240"))
+
+_MECHANICAL_TASK_HINTS = (
+    "rename ", "replace ", "find and replace", "find-and-replace",
+    "change every ", "swap ", "sed ", "s/", "substitute ", "global replace",
+    "typo", "rename the ", "rename all ",
+)
+
+
+def _looks_mechanical(task: str) -> bool:
+    """Heuristic: is `task` something the orchestrator should do inline rather
+    than pay a dispatch round-trip for? True if the task is short AND mentions
+    a mechanical-edit keyword."""
+    t = task.strip().lower()
+    if len(t) > _GUARDRAIL_TASK_CHAR_LIMIT:
+        return False
+    return any(h in t for h in _MECHANICAL_TASK_HINTS)
+
+
+# =============================================================================
 # Tools: agent dispatch
 # =============================================================================
 
@@ -910,7 +935,7 @@ async def agent_run(
     workdir: str | None = None,
     out_dir: str | None = None,
     model: str | None = None,
-    max_iterations: int = 30,
+    max_iterations: int = 12,
     max_tokens: int = 4096,
     temperature: float = 0.2,
     timeout_s: int = 1800,
@@ -930,7 +955,24 @@ async def agent_run(
     Returns metadata only: run_id, out_dir, summary_path, files_changed,
     diff_path, iterations, duration_s, status, error, search_log.
     The actual agent output is on disk under out_dir.
+
+    Guardrail: tiny mechanical tasks (rename/replace/sed-style) are refused
+    early. Use the `fast_edit` tool instead — it bypasses the model loop
+    and applies a literal find/replace at near-zero cost. Set the env var
+    VLLM_AGENT_GUARDRAIL_CHAR_LIMIT=0 to disable.
     """
+    if _GUARDRAIL_TASK_CHAR_LIMIT > 0 and _looks_mechanical(task):
+        return {
+            "status": "refused",
+            "reason": "mechanical_edit_guardrail",
+            "error": (
+                "Task looks like a mechanical find/replace and is too short "
+                "to justify a model dispatch. Use `fast_edit(path, old, new)` "
+                "to apply the change directly, or do the edit inline. "
+                "Override by setting env VLLM_AGENT_GUARDRAIL_CHAR_LIMIT=0."
+            ),
+            "task_chars": len(task),
+        }
     skill_content: str | None = None
     if skill:
         try:
@@ -1034,6 +1076,69 @@ async def agent_session_stop(session_id: str, mode: str = "remote") -> dict[str,
     if mode == "local":
         return asdict(await _aststop_local(session_id))
     return await _http_session_stop(session_id)
+
+
+@mcp.tool(annotations=ToolAnnotations(
+    readOnlyHint=False,
+    destructiveHint=True,
+    idempotentHint=False,
+    openWorldHint=False,
+))
+async def fast_edit(
+    path: str,
+    old: str,
+    new: str,
+    replace_all: bool = False,
+    mode: str = "local",
+    workdir: str | None = None,
+) -> dict[str, Any]:
+    """Apply a literal find/replace on a single file — no model call.
+
+    Use this for mechanical changes (renames, typo fixes, single-line tweaks)
+    where dispatching `agent_run` would pay the boot + system-prompt cost on
+    work the orchestrator could do directly. `old` must appear in the file;
+    by default it must be unique (set replace_all=true to replace every
+    occurrence).
+
+    mode='local'  applies the edit on this machine.
+    mode='remote' POSTs to the VM-side vllm-agent /fast_edit endpoint.
+
+    Returns: {"path", "replacements", "bytes_written"}.
+    """
+    if mode == "local":
+        from pathlib import Path as _P
+        base = _P(workdir).expanduser().resolve() if workdir else _P.cwd()
+        candidate = (base / path).resolve() if not _P(path).is_absolute() else _P(path).resolve()
+        try:
+            candidate.relative_to(base)
+        except ValueError:
+            return {"status": "error",
+                    "error": f"path {path!r} escapes workdir {base}"}
+        try:
+            text = candidate.read_text()
+        except FileNotFoundError:
+            return {"status": "error", "error": f"file not found: {candidate}"}
+        if old not in text:
+            return {"status": "error", "error": f"old string not found in {candidate}"}
+        occurrences = text.count(old)
+        if not replace_all and occurrences > 1:
+            return {
+                "status": "error",
+                "error": (f"old string is not unique ({occurrences} occurrences); "
+                          "set replace_all=true or provide more context"),
+            }
+        new_text = text.replace(old, new) if replace_all else text.replace(old, new, 1)
+        candidate.write_text(new_text)
+        return {
+            "path": str(candidate),
+            "replacements": occurrences if replace_all else 1,
+            "bytes_written": len(new_text.encode()),
+        }
+    # mode == "remote"
+    return await _http_agent("POST", "/fast_edit", body={
+        "path": path, "old": old, "new": new,
+        "replace_all": replace_all, "workdir": workdir,
+    }, timeout=15.0)
 
 
 @mcp.tool(annotations=ToolAnnotations(
