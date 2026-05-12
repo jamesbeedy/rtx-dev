@@ -8,23 +8,80 @@ from . import Tool, ToolContext, register
 
 # ---- read_file --------------------------------------------------------------
 
+# Hard cap on returned content per call. ~4k tokens at 4 chars/token.
+# Worker must use offset/limit to read further chunks of large files.
+READ_FILE_MAX_BYTES = 16_384
+
+
+def _truncate_to_bytes(lines: list[str], max_bytes: int) -> tuple[str, int]:
+    """Concatenate `lines` (with newlines) up to `max_bytes`. Returns (text, n_lines_used)."""
+    out: list[str] = []
+    total = 0
+    for i, line in enumerate(lines):
+        chunk = line if i == len(lines) - 1 else line + "\n"
+        b = len(chunk.encode())
+        if total + b > max_bytes:
+            break
+        out.append(chunk)
+        total += b
+    return "".join(out), len(out)
+
+
 async def _read_file(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
     path_arg = args.get("path", "")
     offset = args.get("offset")
     limit = args.get("limit")
+    max_bytes = int(args.get("max_bytes") or READ_FILE_MAX_BYTES)
     full = ctx.workspace.resolve_path(path_arg)
     try:
-        text = full.read_text()
+        full_text = full.read_text()
     except FileNotFoundError:
         return {"error": f"file not found: {full}"}
     except PermissionError as e:
         return {"error": f"permission denied: {e}"}
-    if offset is not None or limit is not None:
-        lines = text.splitlines()
-        start = int(offset or 0)
-        end = start + int(limit) if limit is not None else len(lines)
-        text = "\n".join(lines[start:end])
-    return {"path": str(full), "content": text, "bytes": len(text.encode())}
+
+    all_lines = full_text.splitlines()
+    total_lines = len(all_lines)
+    total_bytes = len(full_text.encode())
+
+    start = int(offset or 0)
+    whole_file = offset is None and limit is None
+    end = start + int(limit) if limit is not None else total_lines
+    sliced = all_lines[start:end]
+
+    # When the caller didn't slice and the file fits the budget, return the
+    # raw text verbatim (preserves trailing newlines etc.).
+    if whole_file and total_bytes <= max_bytes:
+        sliced_text = full_text
+        truncated = False
+        next_offset: int | None = None
+    else:
+        sliced_text = "\n".join(sliced)
+        truncated = False
+        next_offset = None
+        if len(sliced_text.encode()) > max_bytes:
+            sliced_text, n_used = _truncate_to_bytes(sliced, max_bytes)
+            truncated = True
+            next_offset = start + n_used
+
+    result: dict[str, Any] = {
+        "path": str(full),
+        "content": sliced_text,
+        "bytes": len(sliced_text.encode()),
+        "total_bytes": total_bytes,
+        "total_lines": total_lines,
+        "offset": start,
+        "lines_returned": len(sliced_text.splitlines()),
+        "truncated": truncated,
+    }
+    if truncated:
+        result["next_offset"] = next_offset
+        result["hint"] = (
+            f"File truncated at {max_bytes} bytes. Call read_file again with "
+            f"offset={next_offset} to continue, or use grep to find the section "
+            f"you need. Do NOT request the whole file at once."
+        )
+    return result
 
 
 read_file_tool = register(Tool(
@@ -33,13 +90,27 @@ read_file_tool = register(Tool(
         "type": "function",
         "function": {
             "name": "read_file",
-            "description": "Read a file from the workspace. Supports offset/limit (line-based).",
+            "description": (
+                "Read a file from the workspace, line-based with offset/limit. "
+                f"Output is capped at {READ_FILE_MAX_BYTES} bytes per call to "
+                "protect the context window; if `truncated=true` in the result, "
+                "use `next_offset` for the next chunk. For very large files, "
+                "prefer `grep` to locate the region first, then read with "
+                "offset/limit around the match."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "path": {"type": "string", "description": "Workspace-relative or absolute path."},
                     "offset": {"type": "integer", "description": "Starting line (0-indexed)."},
-                    "limit": {"type": "integer", "description": "Number of lines."},
+                    "limit": {"type": "integer", "description": "Max number of lines to return."},
+                    "max_bytes": {
+                        "type": "integer",
+                        "description": (
+                            f"Override the per-call byte cap (default {READ_FILE_MAX_BYTES}). "
+                            "Raising this risks blowing the context window."
+                        ),
+                    },
                 },
                 "required": ["path"],
             },

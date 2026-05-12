@@ -32,6 +32,41 @@ async def test_read_file_missing(tmp_path, ctx):
     assert "error" in out
 
 
+async def test_read_file_truncates_large_file(tmp_path, ctx):
+    # ~40KB > default 16KB cap.
+    p = tmp_path / "big.txt"
+    p.write_text("\n".join(f"line {i:06d} padding-padding-padding-padding"
+                            for i in range(1000)))
+    out = await read_file_tool.execute({"path": "big.txt"}, ctx)
+    assert out["truncated"] is True
+    assert out["total_lines"] == 1000
+    assert out["total_bytes"] > 16_384
+    assert len(out["content"].encode()) <= 16_384
+    assert out["next_offset"] > 0
+    assert "hint" in out
+
+
+async def test_read_file_offset_resumes_after_truncation(tmp_path, ctx):
+    p = tmp_path / "big.txt"
+    p.write_text("\n".join(f"line {i:06d} padding-padding-padding-padding"
+                            for i in range(1000)))
+    first = await read_file_tool.execute({"path": "big.txt"}, ctx)
+    second = await read_file_tool.execute(
+        {"path": "big.txt", "offset": first["next_offset"]}, ctx)
+    assert second["offset"] == first["next_offset"]
+    # Continuation should start where first chunk left off.
+    assert second["content"].startswith(f"line {first['next_offset']:06d}")
+
+
+async def test_read_file_max_bytes_override(tmp_path, ctx):
+    p = tmp_path / "big.txt"
+    p.write_text("\n".join(f"line {i:06d}" for i in range(500)))
+    out = await read_file_tool.execute(
+        {"path": "big.txt", "max_bytes": 200}, ctx)
+    assert out["truncated"] is True
+    assert len(out["content"].encode()) <= 200
+
+
 async def test_write_file_creates_file(tmp_path, ctx):
     out = await write_file_tool.execute(
         {"path": "new/sub/x.txt", "content": "hello"}, ctx)

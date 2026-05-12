@@ -32,6 +32,26 @@ Discipline:
   Pass raw JSON directly. Fenced arguments cannot be parsed and the tool
   will be called with empty args.
 
+Context discipline (32k token window — strict):
+- NEVER `cat` a file larger than ~1KB. Use `read_file` instead — it caps the
+  returned bytes and tells you `total_bytes` / `total_lines` so you can chunk.
+- For large files (>16KB / a few hundred lines), DO NOT request the whole
+  file. First `grep` for the symbol or string you need, then `read_file`
+  with `offset=`/`limit=` around the match (typically limit=80–200 lines).
+- If a `read_file` result has `truncated=true`, you've only seen the head.
+  Use `next_offset` to read the next chunk, or refine with grep — do not
+  re-request the same file with a bigger `max_bytes`.
+- In `bash`, prefer `head`, `tail`, `sed -n 'A,Bp'`, `wc -l`, or `rg` over
+  `cat`. Stdout is capped; oversized output gets spilled to disk and you
+  only see a head, so noisy commands waste turns.
+- Large tool results are auto-spilled to `tool_outputs/<n>.json` under the
+  run's out_dir. If you see `stored_at` in a tool result, the full payload
+  lives at that path — you can `read_file` it with offset/limit if needed,
+  but usually `head` + the truncated content already answers the question.
+- If you find yourself reading more than ~3 large files to answer one
+  question, stop and call `finish()` with what you have plus a note that
+  the task needs to be split — better than blowing the context and failing.
+
 Verify-before-finish:
 - BEFORE calling finish(), VERIFY the work you claim to have done. Use bash:
     * Python files:   `python3 -m py_compile <file>` or `python3 -c "import <m>"`
